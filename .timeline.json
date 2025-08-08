@@ -1,11 +1,11 @@
 {
-  "timeline_index": 3,
+  "timeline_index": 27,
   "planner": {
     "Team Leader": {
       "1": {
         "task_id": "1",
         "dependent_task_ids": [],
-        "instruction": "Develop the GxP validation application based on the initial requirements. The application should include the following sections: process map creation (similar to Visio), user requirements drafting, risk analysis linked to requirements, installation protocols (IQ), operation protocols (OQ), traceability matrix, and a final validation report. Use Supabase as the backend, with the tables already created. Implement functionality to assign risk levels (HIGH, MEDIUM, LOW) for severity, probability, and detectability to each requirement. For the OQ protocol, allow drafting test cases associated with each user requirement and organize them into annexes by test group. Use Shadcn-ui, TypeScript, and Tailwind CSS for the frontend.",
+        "instruction": "Continue developing the GxP validation application based on the initial requirements. The application should include: process map creation (similar to Visio), user requirements drafting, risk analysis linked to requirements, installation protocols (IQ), operation protocols (OQ), traceability matrix, and final validation report. Use Supabase as backend with tables already created. Implement risk levels (HIGH, MEDIUM, LOW) for severity, probability, and detectability for each requirement. For OQ protocol, allow drafting test cases associated with each user requirement and organize them into annexes by test group. Use Shadcn-ui, TypeScript, and Tailwind CSS for frontend.",
         "task_type": "general",
         "code": "",
         "result": "",
@@ -13,7 +13,7 @@
         "is_finished": true,
         "assignee": "Alex",
         "start_at": 1754559132.4712746,
-        "end_at": 1754559148.4454641
+        "end_at": 1754652796.7854075
       },
       "current_task_id": "1"
     }
@@ -22,7 +22,31 @@
   "timeline_status": {
     "1": 1,
     "2": 1,
-    "3": 1
+    "3": 1,
+    "4": 1,
+    "5": 1,
+    "6": 1,
+    "7": 1,
+    "8": 1,
+    "9": 1,
+    "10": 1,
+    "11": 1,
+    "12": 1,
+    "13": 0,
+    "14": 1,
+    "15": 0,
+    "16": 1,
+    "17": 0,
+    "18": 1,
+    "19": 1,
+    "20": 0,
+    "21": 1,
+    "22": 1,
+    "23": 1,
+    "24": 1,
+    "25": 1,
+    "26": 1,
+    "27": 1
   },
   "preview_servers": {},
   "preview_server": null
