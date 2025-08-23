@@ -9,16 +9,12 @@ import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/hooks/use-toast'
 import {
-  Plus,
   Save,
-  Download,
-  Upload,
   Square,
   Circle,
   ArrowRight,
   Trash2,
-  Move,
-  Edit2
+  Move
 } from 'lucide-react'
 
 interface ProcessStep {
@@ -52,7 +48,6 @@ export default function ProcessMapping() {
     connections: []
   })
   const [selectedStep, setSelectedStep] = useState<string | null>(null)
-  const [isDrawing, setIsDrawing] = useState(false)
   const [savedMaps, setSavedMaps] = useState<ProcessMap[]>([])
   const [loading, setLoading] = useState(true)
 
