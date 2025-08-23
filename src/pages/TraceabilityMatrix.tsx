@@ -24,12 +24,18 @@ interface TraceabilityEntry {
   id?: string
   requirement_id: string
   test_case_id: string
+  prefix?: string
+  number?: number
   protocol_id: string
   status: 'PASSED' | 'FAILED' | 'PENDING'
   created_at?: string
+  updated_at?: string
+  auto_created?: boolean
   requirement?: {
-    requirement_text: string
+    requirement: string
     category: string
+    prefix?: string
+    number?: string
   }
   protocol?: {
     title: string
@@ -39,8 +45,10 @@ interface TraceabilityEntry {
 
 interface UserRequirement {
   id: string
-  requirement_text: string
+  requirement: string
   category: string
+  prefix?: string
+  number?: string
 }
 
 interface ValidationProtocol {
@@ -84,50 +92,68 @@ export default function TraceabilityMatrix() {
     fetchData()
   }, [user])
 
-  const fetchData = async () => {
+  // Set up real-time sync when component mounts
+  useEffect(() => {
+    if (!user) return
+
+    // Only listen to traceability_matrix changes to avoid triggering sync loops
+    const matrixSubscription = supabase
+      .channel('traceability_matrix_changes')
+      .on('postgres_changes', 
+        { 
+          event: '*', 
+          schema: 'public', 
+          table: 'traceability_matrix'
+        }, 
+        (payload) => {
+          console.log('Traceability matrix changed:', payload)
+          // Refresh data when matrix changes (without sync)
+          fetchDataWithoutSync()
+        }
+      )
+      .subscribe()
+
+    return () => {
+      matrixSubscription.unsubscribe()
+    }
+  }, [user])
+
+  // Function to fetch data without triggering sync (to avoid loops)
+  const fetchDataWithoutSync = async () => {
     if (!user) return
 
     try {
-      // Fetch traceability entries
+      // Fetch traceability entries with related data
       const { data: entriesData, error: entriesError } = await supabase
-        .from('app_a06fa33f4c_traceability_matrix')
-        .select('*')
-        .eq('user_id', user.id)
+        .from('traceability_matrix')
+        .select(`
+          *,
+          user_requirements!inner(id, requirement, category, prefix, number),
+          validation_protocols!inner(title, type)
+        `)
         .order('created_at', { ascending: false })
 
-      if (entriesError) throw entriesError
+      if (entriesError && entriesError.code !== 'PGRST116') {
+        console.error('Error fetching traceability entries:', entriesError)
+        setTraceabilityEntries([])
+      } else {
+        // Map the data with proper relationships
+        const entriesWithDetails = (entriesData || []).map((entry: any) => ({
+          ...entry,
+          requirement: entry.user_requirements || null,
+          protocol: entry.validation_protocols ? {
+            ...entry.validation_protocols,
+            protocol_type: entry.validation_protocols.type
+          } : null
+        }))
 
-      // Fetch requirements and protocols for each entry
-      const entriesWithDetails = await Promise.all(
-        (entriesData || []).map(async (entry) => {
-          const [reqResult, protocolResult] = await Promise.all([
-            supabase
-              .from('app_a06fa33f4c_user_requirements')
-              .select('requirement_text, category')
-              .eq('id', entry.requirement_id)
-              .single(),
-            supabase
-              .from('app_a06fa33f4c_validation_protocols')
-              .select('title, protocol_type')
-              .eq('id', entry.protocol_id)
-              .single()
-          ])
+        setTraceabilityEntries(entriesWithDetails)
+      }
 
-          return {
-            ...entry,
-            requirement: reqResult.data,
-            protocol: protocolResult.data
-          }
-        })
-      )
-
-      setTraceabilityEntries(entriesWithDetails)
-
-      // Fetch available requirements
+      // Fetch available requirements with prefix and number
       const { data: requirementsData, error: requirementsError } = await supabase
-        .from('app_a06fa33f4c_user_requirements')
-        .select('id, requirement_text, category')
-        .eq('user_id', user.id)
+        .from('user_requirements')
+        .select('id, requirement, category, prefix, number')
 
       if (requirementsError) throw requirementsError
 
@@ -135,13 +161,186 @@ export default function TraceabilityMatrix() {
 
       // Fetch available protocols
       const { data: protocolsData, error: protocolsError } = await supabase
-        .from('app_a06fa33f4c_validation_protocols')
-        .select('id, title, protocol_type, content')
-        .eq('user_id', user.id)
+        .from('validation_protocols')
+        .select('id, title, type, content')
 
-      if (protocolsError) throw protocolsError
+      if (protocolsError && protocolsError.code !== 'PGRST116') {
+        console.error('Error fetching protocols:', protocolsError)
+      }
 
-      setProtocols(protocolsData || [])
+      // Map type to protocol_type for consistency
+      const mappedProtocols = (protocolsData || []).map((p: any) => ({
+        ...p,
+        protocol_type: p.type
+      }))
+
+      setProtocols(mappedProtocols)
+    } catch (error) {
+      console.error('Error fetching data:', error)
+      toast({
+        title: "Error",
+        description: "No se pudieron cargar los datos de trazabilidad",
+        variant: "destructive"
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const syncExecutionResults = async () => {
+    if (!user) return
+
+    try {
+      // Fetch all protocol executions
+      const { data: executionsData, error: executionsError } = await supabase
+        .from('protocol_executions')
+        .select('*')
+
+      if (executionsError && executionsError.code !== 'PGRST116') {
+        console.error('Error fetching executions:', executionsError)
+        return
+      }
+
+      if (!executionsData || executionsData.length === 0) return
+
+      // For each execution, check if there's a corresponding traceability entry
+      for (const execution of executionsData) {
+        // Check if traceability entry already exists with exact match
+        const { data: existingEntries, error: existingError } = await supabase
+          .from('traceability_matrix')
+          .select('*')
+          .eq('protocol_id', execution.protocol_id)
+          .eq('test_case_id', execution.test_case_id)
+
+        if (existingError && existingError.code !== 'PGRST116') {
+          console.error('Error checking existing entry:', existingError)
+          continue
+        }
+
+        // If no existing entries, create a new one (only for current user's executions)
+        if (!existingEntries || existingEntries.length === 0) {
+          if (execution.executed_by === user.id) {
+            // First, verify that the protocol exists
+            const { data: protocolExists, error: protocolError } = await supabase
+              .from('validation_protocols')
+              .select('id')
+              .eq('id', execution.protocol_id)
+              .single()
+
+            if (protocolError || !protocolExists) {
+              console.log(`Protocol ${execution.protocol_id} not found, skipping traceability entry creation`)
+              continue
+            }
+
+            // Try to find a matching requirement for this protocol/test case
+            const { data: requirementsData, error: reqError } = await supabase
+              .from('user_requirements')
+              .select('id')
+              .limit(1)
+
+            if (reqError && reqError.code !== 'PGRST116') {
+              console.error('Error fetching requirements:', reqError)
+              continue
+            }
+
+            if (requirementsData && requirementsData.length > 0) {
+              // Create new traceability entry
+              const { error: insertError } = await supabase
+                .from('traceability_matrix')
+                .insert({
+                  requirement_id: requirementsData[0].id,
+                  test_case_id: execution.test_case_id,
+                  protocol_id: execution.protocol_id,
+                  status: execution.status,
+                  user_id: execution.executed_by,
+                  auto_created: true,
+                  created_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString()
+                })
+
+              if (insertError && insertError.code !== 'PGRST116') {
+                console.error('Error creating traceability entry:', insertError)
+              }
+            }
+          }
+        } else {
+          // Update existing entry with latest execution status
+          const existingEntry = existingEntries[0]
+          const existingDate = new Date(existingEntry.updated_at || existingEntry.created_at)
+          const executionDate = new Date(execution.executed_at || execution.created_at)
+          
+          if (executionDate >= existingDate) {
+            await supabase
+              .from('traceability_matrix')
+              .update({
+                status: execution.status,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', existingEntry.id)
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error syncing execution results:', error)
+    }
+  }
+
+  const fetchData = async () => {
+    if (!user) return
+
+    try {
+      // Fetch traceability entries with related data (remove user_id filter so all users can see all records)
+      const { data: entriesData, error: entriesError } = await supabase
+        .from('traceability_matrix')
+        .select(`
+          *,
+          user_requirements!inner(id, requirement, category, prefix, number),
+          validation_protocols!inner(title, type)
+        `)
+        .order('created_at', { ascending: false })
+
+      if (entriesError && entriesError.code !== 'PGRST116') {
+        console.error('Error fetching traceability entries:', entriesError)
+        setTraceabilityEntries([])
+      } else {
+        // Map the data with proper relationships
+        const entriesWithDetails = (entriesData || []).map((entry: any) => ({
+          ...entry,
+          requirement: entry.user_requirements || null,
+          protocol: entry.validation_protocols ? {
+            ...entry.validation_protocols,
+            protocol_type: entry.validation_protocols.type
+          } : null
+        }))
+
+        setTraceabilityEntries(entriesWithDetails)
+      }
+
+      // Fetch available requirements with prefix and number
+      const { data: requirementsData, error: requirementsError } = await supabase
+        .from('user_requirements')
+        .select('id, requirement, category, prefix, number')
+
+      if (requirementsError) throw requirementsError
+
+      setRequirements(requirementsData || [])
+
+      // Fetch available protocols
+      const { data: protocolsData, error: protocolsError } = await supabase
+        .from('validation_protocols')
+        .select('id, title, type, content')
+
+      if (protocolsError && protocolsError.code !== 'PGRST116') {
+        console.error('Error fetching protocols:', protocolsError)
+      }
+
+      // Map type to protocol_type for consistency
+      const mappedProtocols = (protocolsData || []).map((p: any) => ({
+        ...p,
+        protocol_type: p.type
+      }))
+
+      setProtocols(mappedProtocols)
     } catch (error) {
       console.error('Error fetching data:', error)
       toast({
@@ -165,10 +364,42 @@ export default function TraceabilityMatrix() {
     }
 
     try {
+      // First, verify that the protocol exists
+      const { data: protocolExists, error: protocolError } = await supabase
+        .from('validation_protocols')
+        .select('id')
+        .eq('id', newEntry.protocol_id)
+        .single()
+
+      if (protocolError || !protocolExists) {
+        toast({
+          title: "Error",
+          description: "El protocolo seleccionado no existe o ha sido eliminado",
+          variant: "destructive"
+        })
+        return
+      }
+
+      // Verify that the requirement exists
+      const { data: requirementExists, error: requirementError } = await supabase
+        .from('user_requirements')
+        .select('id')
+        .eq('id', newEntry.requirement_id)
+        .single()
+
+      if (requirementError || !requirementExists) {
+        toast({
+          title: "Error",
+          description: "El requerimiento seleccionado no existe o ha sido eliminado",
+          variant: "destructive"
+        })
+        return
+      }
+
       if (editingEntry) {
         // Update existing
         const { error } = await supabase
-          .from('app_a06fa33f4c_traceability_matrix')
+          .from('traceability_matrix')
           .update({
             requirement_id: newEntry.requirement_id,
             test_case_id: newEntry.test_case_id,
@@ -181,7 +412,7 @@ export default function TraceabilityMatrix() {
       } else {
         // Create new
         const { error } = await supabase
-          .from('app_a06fa33f4c_traceability_matrix')
+          .from('traceability_matrix')
           .insert({
             requirement_id: newEntry.requirement_id,
             test_case_id: newEntry.test_case_id,
@@ -226,7 +457,7 @@ export default function TraceabilityMatrix() {
   const deleteEntry = async (id: string) => {
     try {
       const { error } = await supabase
-        .from('app_a06fa33f4c_traceability_matrix')
+        .from('traceability_matrix')
         .delete()
         .eq('id', id)
 
@@ -272,139 +503,155 @@ export default function TraceabilityMatrix() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold text-gray-900">Matriz de Trazabilidad</h1>
-        <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={resetForm} className="flex items-center space-x-2">
-              <Plus className="h-4 w-4" />
-              <span>Nueva Trazabilidad</span>
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>
-                {editingEntry ? 'Editar' : 'Crear'} Entrada de Trazabilidad
-              </DialogTitle>
-              <DialogDescription>
-                {editingEntry
-                  ? 'Modifica la entrada de trazabilidad existente'
-                  : 'Crea una nueva relación entre requerimiento, protocolo y caso de prueba'}
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div>
-                <Label htmlFor="requirement_id">Requerimiento</Label>
-                <Select
-                  value={newEntry.requirement_id}
-                  onValueChange={(value) => setNewEntry(prev => ({
-                    ...prev,
-                    requirement_id: value
-                  }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecciona un requerimiento" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {requirements.map(req => (
-                      <SelectItem key={req.id} value={req.id}>
-                        <div className="flex flex-col">
-                          <span className="truncate max-w-md">{req.requirement_text}</span>
-                          <Badge variant="secondary" className="w-fit text-xs">
-                            {req.category}
-                          </Badge>
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div>
-                <Label htmlFor="protocol_id">Protocolo de Validación</Label>
-                <Select
-                  value={newEntry.protocol_id}
-                  onValueChange={(value) => setNewEntry(prev => ({
-                    ...prev,
-                    protocol_id: value,
-                    test_case_id: '' // Reset test case when protocol changes
-                  }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecciona un protocolo" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {protocols.map(protocol => (
-                      <SelectItem key={protocol.id} value={protocol.id}>
-                        <div className="flex flex-col">
-                          <span>{protocol.title}</span>
-                          <Badge variant="secondary" className="w-fit text-xs">
-                            {protocol.protocol_type}
-                          </Badge>
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {newEntry.protocol_id && (
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900">Matriz de Trazabilidad</h1>
+          <p className="text-sm text-gray-600 mt-1">
+            Las ejecuciones de pruebas se sincronizan automáticamente desde los protocolos ejecutados
+          </p>
+        </div>
+        <div className="flex items-center space-x-2">
+          <Button 
+            onClick={() => {
+              syncExecutionResults().then(() => fetchData())
+            }} 
+            variant="outline"
+            className="flex items-center space-x-2"
+          >
+            <span>Sincronizar</span>
+          </Button>
+          <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+            <DialogTrigger asChild>
+              <Button onClick={resetForm} className="flex items-center space-x-2">
+                <Plus className="h-4 w-4" />
+                <span>Nueva Trazabilidad</span>
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>
+                  {editingEntry ? 'Editar' : 'Crear'} Entrada de Trazabilidad
+                </DialogTitle>
+                <DialogDescription>
+                  {editingEntry
+                    ? 'Modifica la entrada de trazabilidad existente'
+                    : 'Crea una nueva relación entre requerimiento, protocolo y caso de prueba'}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
                 <div>
-                  <Label htmlFor="test_case_id">Caso de Prueba</Label>
+                  <Label htmlFor="requirement_id">Requerimiento</Label>
                   <Select
-                    value={newEntry.test_case_id}
+                    value={newEntry.requirement_id}
                     onValueChange={(value) => setNewEntry(prev => ({
                       ...prev,
-                      test_case_id: value
+                      requirement_id: value
                     }))}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Selecciona un caso de prueba" />
+                      <SelectValue placeholder="Selecciona un requerimiento" />
                     </SelectTrigger>
                     <SelectContent>
-                      {getTestCasesForProtocol(newEntry.protocol_id).map((testCase: any) => (
-                        <SelectItem key={testCase.id} value={testCase.id}>
-                          <span className="truncate max-w-md">{testCase.description}</span>
+                      {requirements.map(req => (
+                        <SelectItem key={req.id} value={req.id}>
+                          <div className="flex flex-col">
+                            <span className="truncate max-w-md">{req.requirement}</span>
+                            <Badge variant="secondary" className="w-fit text-xs">
+                              {req.category}
+                            </Badge>
+                          </div>
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
-              )}
 
-              <div>
-                <Label htmlFor="status">Estado</Label>
-                <Select
-                  value={newEntry.status}
-                  onValueChange={(value: 'PASSED' | 'FAILED' | 'PENDING') => setNewEntry(prev => ({
-                    ...prev,
-                    status: value
-                  }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="PENDING">Pendiente</SelectItem>
-                    <SelectItem value="PASSED">Aprobado</SelectItem>
-                    <SelectItem value="FAILED">Fallido</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+                <div>
+                  <Label htmlFor="protocol_id">Protocolo de Validación</Label>
+                  <Select
+                    value={newEntry.protocol_id}
+                    onValueChange={(value) => setNewEntry(prev => ({
+                      ...prev,
+                      protocol_id: value,
+                      test_case_id: '' // Reset test case when protocol changes
+                    }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecciona un protocolo" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {protocols.map(protocol => (
+                        <SelectItem key={protocol.id} value={protocol.id}>
+                          <div className="flex flex-col">
+                            <span>{protocol.title}</span>
+                            <Badge variant="secondary" className="w-fit text-xs">
+                              {protocol.protocol_type}
+                            </Badge>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-              <div className="flex space-x-2 pt-4">
-                <Button onClick={saveEntry} className="flex-1">
-                  {editingEntry ? 'Actualizar' : 'Crear'} Trazabilidad
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => setIsDialogOpen(false)}
-                >
-                  Cancelar
-                </Button>
+                {newEntry.protocol_id && (
+                  <div>
+                    <Label htmlFor="test_case_id">Caso de Prueba</Label>
+                    <Select
+                      value={newEntry.test_case_id}
+                      onValueChange={(value) => setNewEntry(prev => ({
+                        ...prev,
+                        test_case_id: value
+                      }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecciona un caso de prueba" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {getTestCasesForProtocol(newEntry.protocol_id).map((testCase: any) => (
+                          <SelectItem key={testCase.id} value={testCase.id}>
+                            <span className="truncate max-w-md">{testCase.description}</span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+
+                <div>
+                  <Label htmlFor="status">Estado</Label>
+                  <Select
+                    value={newEntry.status}
+                    onValueChange={(value: 'PASSED' | 'FAILED' | 'PENDING') => setNewEntry(prev => ({
+                      ...prev,
+                      status: value
+                    }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="PENDING">Pendiente</SelectItem>
+                      <SelectItem value="PASSED">Aprobado</SelectItem>
+                      <SelectItem value="FAILED">Fallido</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="flex space-x-2 pt-4">
+                  <Button onClick={saveEntry} className="flex-1">
+                    {editingEntry ? 'Actualizar' : 'Crear'} Trazabilidad
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => setIsDialogOpen(false)}
+                  >
+                    Cancelar
+                  </Button>
+                </div>
               </div>
-            </div>
-          </DialogContent>
-        </Dialog>
+            </DialogContent>
+          </Dialog>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
@@ -444,6 +691,19 @@ export default function TraceabilityMatrix() {
                 </p>
               </div>
               <Clock className="h-8 w-8 text-yellow-600" />
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-600">Casos Fallidos</p>
+                <p className="text-2xl font-bold text-red-600">
+                  {traceabilityEntries.filter(e => e.status === 'FAILED').length}
+                </p>
+              </div>
+              <Clock className="h-8 w-8 text-red-600" />
             </div>
           </CardContent>
         </Card>
@@ -519,15 +779,35 @@ export default function TraceabilityMatrix() {
                   const StatusIcon = statusIcons[entry.status]
                   return (
                     <TableRow key={entry.id}>
-                      <TableCell className="max-w-xs">
-                        <div>
-                          <div className="font-medium text-sm truncate">
-                            {entry.requirement?.requirement_text || 'N/A'}
-                          </div>
-                          <Badge variant="secondary" className="text-xs">
-                            {entry.requirement?.category || 'N/A'}
-                          </Badge>
-                        </div>
+                      <TableCell>
+                        {(() => {
+                          const protocol = protocols.find(p => p.id === entry.protocol_id)
+                          const testCase = protocol?.content?.test_cases?.find(
+                            (tc: any) => tc.id === entry.test_case_id
+                          )
+
+                          const requirement = testCase
+                            ? requirements.find(r => r.id === testCase.requirement_id)
+                            : entry.requirement
+
+                          return (
+                            <div>
+                              <div className="text-sm text-gray-600 truncate">
+                                {requirement?.requirement || 'N/A'}
+                              </div>
+                              <div className="flex items-center space-x-1 mt-1">
+                                <Badge variant="outline">
+                                  <div className="font-medium text-blue-600 mb-1">
+                                    {requirement?.prefix || testCase?.prefix || 'REQ'}-{requirement?.number || testCase?.number || '001'}
+                                  </div>
+                                </Badge>
+                                <Badge variant="secondary" className="text-xs">
+                                  {requirement?.category || 'N/A'}
+                                </Badge>
+                              </div>
+                            </div>
+                          )
+                        })()}
                       </TableCell>
                       <TableCell>
                         <div>

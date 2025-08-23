@@ -12,6 +12,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/hooks/use-toast'
 import {
   Plus,
+  ClipboardList,
   Edit2,
   Trash2,
   AlertTriangle,
@@ -22,8 +23,11 @@ import {
 
 interface UserRequirement {
   id?: string
-  requirement_text: string
+  email?: string,
+  requirement: string
   category: string
+  prefix?: string
+  number?: string
   priority: 'HIGH' | 'MEDIUM' | 'LOW'
   created_at?: string
 }
@@ -62,7 +66,7 @@ export default function UserRequirements() {
   const [filterCategory, setFilterCategory] = useState<string>('all')
   const [filterPriority, setFilterPriority] = useState<string>('all')
   const [newRequirement, setNewRequirement] = useState<UserRequirement>({
-    requirement_text: '',
+    requirement: '',
     category: '',
     priority: 'MEDIUM'
   })
@@ -71,18 +75,30 @@ export default function UserRequirements() {
     fetchRequirements()
   }, [user])
 
+  useEffect(()=>{
+    setNewRequirement(prev => ({...prev, email: user?.email}))
+  }, [user])
+
   useEffect(() => {
     applyFilters()
   }, [requirements, filterCategory, filterPriority])
+
+  useEffect(() => {
+    if (user && user.email) {
+      setNewRequirement(prev => ({
+        ...prev,
+        email: user.email
+      }));
+    }
+  }, [user]);
 
   const fetchRequirements = async () => {
     if (!user) return
 
     try {
       const { data, error } = await supabase
-        .from('app_a06fa33f4c_user_requirements')
+        .from('user_requirements')
         .select('*')
-        .eq('user_id', user.id)
         .order('created_at', { ascending: false })
 
       if (error) throw error
@@ -115,7 +131,7 @@ export default function UserRequirements() {
   }
 
   const saveRequirement = async () => {
-    if (!user || !newRequirement.requirement_text || !newRequirement.category) {
+    if (!user || !newRequirement.requirement || !newRequirement.category) {
       toast({
         title: "Error",
         description: "Por favor complete todos los campos requeridos",
@@ -125,30 +141,96 @@ export default function UserRequirements() {
     }
 
     try {
+      const userEmail = user.email || '' 
+
       if (editingRequirement) {
         // Update existing
+        const { data: oldData, error: oldError } = await supabase
+          .from('user_requirements')
+          .select('*')
+          .eq('id', editingRequirement.id)
+          .single()
+
+        if (oldError) throw oldError
+
+        const newData = {
+          requirement: newRequirement.requirement,
+          category: newRequirement.category,
+          priority: newRequirement.priority,
+          email: userEmail
+        };
+
         const { error } = await supabase
-          .from('app_a06fa33f4c_user_requirements')
+          .from('user_requirements')
           .update({
-            requirement_text: newRequirement.requirement_text,
+            requirement: newRequirement.requirement,
             category: newRequirement.category,
-            priority: newRequirement.priority
+            priority: newRequirement.priority,
+            email: userEmail
           })
           .eq('id', editingRequirement.id)
 
         if (error) throw error
+
+        function getChangedFields(oldObj: any, newObj: any) {
+          const changed: any = {};
+          for (const key in newObj) {
+            if (JSON.stringify(oldObj[key]) !== JSON.stringify(newObj[key])) {
+              changed[key] = { old: oldObj[key], new: newObj[key] };
+            }
+          }
+          return changed;
+        }
+
+        const changes = getChangedFields(oldData, newData);
+
+        await supabase.from('audit_trail').insert({
+            user_id: user.id,
+            action: 'UPDATE',
+            entity: 'user_requirement',
+            entity_id: editingRequirement.id,
+            details: {changes,
+              timestamp: new Date().toISOString(),
+              performed_by: {
+                id: user.id,
+                email: userEmail
+              }
+            }})
       } else {
         // Create new
-        const { error } = await supabase
-          .from('app_a06fa33f4c_user_requirements')
+        const { data, error } = await supabase
+          .from('user_requirements')
           .insert({
-            requirement_text: newRequirement.requirement_text,
+            requirement: newRequirement.requirement,
             category: newRequirement.category,
             priority: newRequirement.priority,
+            prefix: newRequirement.prefix,
+            number: newRequirement.number,
+            email: userEmail,
             user_id: user.id
           })
+          .select()
 
         if (error) throw error
+
+        if (user && data && data[0]) {
+          await supabase.from('audit_trail').insert({
+            user_id: user.id,
+            action: 'CREATE',
+            entity: 'user_requirement',
+            entity_id: data[0].id,
+            details: {
+              new_data: {
+                ...newRequirement,
+                email: userEmail
+              },
+              timestamp: new Date().toISOString(),
+              performed_by: {
+                id: user.id,
+                email: userEmail
+            } }
+          })
+        }
       }
 
       toast({
@@ -159,7 +241,7 @@ export default function UserRequirements() {
       setIsDialogOpen(false)
       setEditingRequirement(null)
       setNewRequirement({
-        requirement_text: '',
+        requirement: '',
         category: '',
         priority: 'MEDIUM'
       })
@@ -168,7 +250,7 @@ export default function UserRequirements() {
       console.error('Error saving requirement:', error)
       toast({
         title: "Error",
-        description: "No se pudo guardar el requerimiento",
+        description: `No se pudo guardar el requerimiento ${newRequirement.prefix}-${newRequirement.number || ''}. El id ${newRequirement.prefix}-${newRequirement.number|| ''} ya existe.`,
         variant: "destructive"
       })
     }
@@ -177,7 +259,7 @@ export default function UserRequirements() {
   const editRequirement = (requirement: UserRequirement) => {
     setEditingRequirement(requirement)
     setNewRequirement({
-      requirement_text: requirement.requirement_text,
+      requirement: requirement.requirement,
       category: requirement.category,
       priority: requirement.priority
     })
@@ -186,18 +268,52 @@ export default function UserRequirements() {
 
   const deleteRequirement = async (id: string) => {
     try {
+      // First, fetch the data before deleting
+      const { data: oldData, error: fetchError } = await supabase
+        .from('user_requirements')
+        .select('*')
+        .eq('id', id)
+        .single()
+      
+      if (fetchError) throw fetchError
+      
+      // Then delete the data
       const { error } = await supabase
-        .from('app_a06fa33f4c_user_requirements')
+        .from('user_requirements')
         .delete()
         .eq('id', id)
 
       if (error) throw error
 
+      if (user) {
+        // Create a filtered version of oldData with only the required fields
+        const filteredData = {
+          prefix: oldData.prefix,
+          number: oldData.number,
+          category: oldData.category,
+          requirement: oldData.requirement
+        };
+        
+        await supabase.from('audit_trail').insert({
+          user_id: user.id,
+          action: 'DELETE',
+          entity: 'user_requirement',
+          entity_id: id,
+          details: {
+            deleted_data: filteredData,
+            timestamp: new Date().toISOString(),
+            performed_by: {
+              id: user.id,
+              email: user.email
+            }
+          }  
+    })}
+
       toast({
         title: "Éxito",
         description: "Requerimiento eliminado correctamente"
       })
-
+      
       fetchRequirements()
     } catch (error) {
       console.error('Error deleting requirement:', error)
@@ -212,9 +328,10 @@ export default function UserRequirements() {
   const resetDialog = () => {
     setEditingRequirement(null)
     setNewRequirement({
-      requirement_text: '',
+      requirement: '',
       category: '',
-      priority: 'MEDIUM'
+      priority: 'MEDIUM',
+      email: user?.email || ''
     })
   }
 
@@ -242,13 +359,36 @@ export default function UserRequirements() {
             </DialogHeader>
             <div className="space-y-4">
               <div>
-                <Label htmlFor="requirement_text">Descripción del Requerimiento</Label>
+                <Label htmlFor="prefix">Prefijo</Label>
+                <Select
+                  value={newRequirement.prefix || ''}
+                  onValueChange={value => setNewRequirement(prev => ({ ...prev, prefix: value }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecciona un prefijo" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="URS">URS</SelectItem>
+                    <SelectItem value="FI">FI</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label htmlFor="number">Número</Label>
+                <Input
+                  id="number"
+                  type="text"
+                  value={newRequirement.number || ''}
+                  onChange={e => setNewRequirement(prev => ({ ...prev, number: e.target.value }))}
+                  placeholder="Ej: 001"
+                />
+                <Label htmlFor="requirement">Descripción del Requerimiento</Label>
                 <Textarea
-                  id="requirement_text"
-                  value={newRequirement.requirement_text}
+                  id="requirement"
+                  value={newRequirement.requirement}
                   onChange={(e) => setNewRequirement(prev => ({
                     ...prev,
-                    requirement_text: e.target.value
+                    requirement: e.target.value
                   }))}
                   placeholder="Describe el requerimiento funcional o no funcional..."
                   rows={4}
@@ -381,10 +521,15 @@ export default function UserRequirements() {
                             <PriorityIcon className="h-3 w-3 mr-1" />
                             {requirement.priority === 'HIGH' ? 'Alta' : requirement.priority === 'MEDIUM' ? 'Media' : 'Baja'}
                           </Badge>
+                          {requirement.prefix && requirement.number && (
+                            <Badge variant="outline">
+                              {requirement.prefix}-{requirement.number}
+                            </Badge>
+                          )}
                         </div>
-                        <p className="text-gray-900 mb-2">{requirement.requirement_text}</p>
+                        <p className="text-gray-900 mb-2">{requirement.requirement}</p>
                         <p className="text-xs text-gray-500">
-                          Creado el {new Date(requirement.created_at!).toLocaleDateString('es-ES')}
+                          Creado el {new Date(requirement.created_at!).toLocaleString('es-ES')}
                         </p>
                       </div>
                       <div className="flex items-center space-x-2 ml-4">

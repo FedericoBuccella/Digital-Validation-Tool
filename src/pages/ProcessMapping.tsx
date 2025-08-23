@@ -44,7 +44,7 @@ export default function ProcessMapping() {
   const { user } = useAuth()
   const { toast } = useToast()
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const [selectedTool, setSelectedTool] = useState<'select' | 'process' | 'decision' | 'arrow'>('select')
+  const [selectedTool, setSelectedTool] = useState<'select' | 'start' | 'end' | 'process' | 'decision' | 'arrow'>('select')
   const [processMap, setProcessMap] = useState<ProcessMap>({
     title: '',
     description: '',
@@ -62,11 +62,11 @@ export default function ProcessMapping() {
   }, [processMap])
 
   const fetchSavedMaps = async () => {
-    if (!user) return
+    if (!user) return;
 
     try {
       const { data, error } = await supabase
-        .from('app_a06fa33f4c_process_maps')
+        .from('process_maps')
         .select('*')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
@@ -240,7 +240,7 @@ export default function ProcessMapping() {
       if (processMap.id) {
         // Update existing
         const { error } = await supabase
-          .from('app_a06fa33f4c_process_maps')
+          .from('process_maps')
           .update({
             title: processMap.title,
             description: processMap.description,
@@ -252,7 +252,7 @@ export default function ProcessMapping() {
       } else {
         // Create new
         const { error } = await supabase
-          .from('app_a06fa33f4c_process_maps')
+          .from('process_maps')
           .insert({
             title: processMap.title,
             description: processMap.description,

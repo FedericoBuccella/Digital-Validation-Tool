@@ -12,6 +12,7 @@ import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/hooks/use-toast'
 import {
+  Eye,
   Plus,
   Edit2,
   Trash2,
@@ -68,6 +69,8 @@ const statusIcons = {
 
 export default function ValidationProtocols() {
   const { user } = useAuth()
+  const [viewingProtocol, setViewingProtocol] = useState<ValidationProtocol | null>(null)
+  const [isViewDialogOpen, setIsViewDialogOpen] = useState(false)
   const { toast } = useToast()
   const [protocols, setProtocols] = useState<ValidationProtocol[]>([])
   const [requirements, setRequirements] = useState<any[]>([])
@@ -100,20 +103,25 @@ export default function ValidationProtocols() {
     try {
       // Fetch protocols
       const { data: protocolsData, error: protocolsError } = await supabase
-        .from('app_a06fa33f4c_validation_protocols')
+        .from('validation_protocols')
         .select('*')
-        .eq('user_id', user.id)
+        //.eq('user_id', user.id)
         .order('created_at', { ascending: false })
 
       if (protocolsError) throw protocolsError
 
-      setProtocols(protocolsData || [])
+      setProtocols(
+      (protocolsData || []).map((p: any) => ({
+        ...p,
+        protocol_type: p.type // <-- aquí el mapeo
+        }))
+      )
 
       // Fetch requirements
       const { data: requirementsData, error: requirementsError } = await supabase
-        .from('app_a06fa33f4c_user_requirements')
+        .from('user_requirements')
         .select('*')
-        .eq('user_id', user.id)
+        //.eq('user_id', user.id)
 
       if (requirementsError) throw requirementsError
 
@@ -130,6 +138,11 @@ export default function ValidationProtocols() {
     }
   }
 
+  const safeContent = {
+    description: newProtocol.content.description || '',
+    test_cases: Array.isArray(newProtocol.content.test_cases) ? newProtocol.content.test_cases : []
+  }
+
   const saveProtocol = async () => {
     if (!user || !newProtocol.title) {
       toast({
@@ -142,31 +155,139 @@ export default function ValidationProtocols() {
 
     try {
       if (editingProtocol) {
+        // Fetch old data for audit trail
+        const { data: oldData, error: oldError } = await supabase
+          .from('validation_protocols')
+          .select('*')
+          .eq('id', editingProtocol.id)
+          .single()
+
+        if (oldError) throw oldError
+
         // Update existing
         const { error } = await supabase
-          .from('app_a06fa33f4c_validation_protocols')
+          .from('validation_protocols')
           .update({
-            protocol_type: newProtocol.protocol_type,
+            type: newProtocol.protocol_type,
             title: newProtocol.title,
-            content: newProtocol.content,
+            content: safeContent,
             status: newProtocol.status
           })
           .eq('id', editingProtocol.id)
 
         if (error) throw error
+        
+        // Create new data object for comparison
+        const newData = {
+          protocol_type: newProtocol.protocol_type,
+          title: newProtocol.title,
+          content: safeContent,
+          status: newProtocol.status
+        };
+
+        // Create changes object for audit
+        function getChangedFields(oldObj: any, newObj: any) {
+          const changed: any = {};
+          
+          // Handle protocol_type mapping (stored as 'type' in DB)
+          if (oldObj.type !== newObj.protocol_type) {
+            changed['protocol_type'] = { old: oldObj.type, new: newObj.protocol_type };
+          }
+          
+          // Handle title
+          if (oldObj.title !== newObj.title) {
+            changed['title'] = { old: oldObj.title, new: newObj.title };
+          }
+          
+          // Handle status
+          if (oldObj.status !== newObj.status) {
+            changed['status'] = { old: oldObj.status, new: newObj.status };
+          }
+          
+          // Handle content changes
+          if (JSON.stringify(oldObj.content?.description) !== JSON.stringify(newObj.content.description)) {
+            changed['content.description'] = { 
+              old: oldObj.content?.description || '', 
+              new: newObj.content.description || ''
+            };
+          }
+          
+          // Handle test cases changes
+          const oldTestCases = Array.isArray(oldObj.content?.test_cases) ? oldObj.content.test_cases : [];
+          const newTestCases = Array.isArray(newObj.content.test_cases) ? newObj.content.test_cases : [];
+          
+          if (JSON.stringify(oldTestCases) !== JSON.stringify(newTestCases)) {
+            changed['test_cases'] = { 
+              old: `${oldTestCases.length} casos de prueba: ${oldTestCases.map((tc: TestCase, idx: number) => `${idx+1}. ${tc.description}`).join('; ')}`,
+              new: `${newTestCases.length} casos de prueba: ${newTestCases.map((tc: TestCase, idx: number) => `${idx+1}. ${tc.description}`).join('; ')}`
+            };
+          }
+          
+          return changed;
+        }
+
+        const changes = getChangedFields(oldData, newData);
+        
+        // Only record if there are changes
+        if (Object.keys(changes).length > 0) {
+          await supabase.from('audit_trail').insert({
+            user_id: user.id,
+            action: 'UPDATE',
+            entity: 'validation_protocol',
+            entity_id: editingProtocol.id,
+            details: {
+              changes,
+              timestamp: new Date().toISOString(),
+              performed_by: {
+                id: user.id,
+                email: user.email
+              }
+            }
+          });
+        }
       } else {
         // Create new
-        const { error } = await supabase
-          .from('app_a06fa33f4c_validation_protocols')
+        const { data, error } = await supabase
+          .from('validation_protocols')
           .insert({
-            protocol_type: newProtocol.protocol_type,
+            type: newProtocol.protocol_type,
             title: newProtocol.title,
-            content: newProtocol.content,
+            content: {
+              description: newProtocol.content.description || '',
+              test_cases: newProtocol.content.test_cases ||[],
+            },
             status: newProtocol.status,
             user_id: user.id
           })
+          .select()
 
         if (error) throw error
+        
+        if (data && data[0]) {
+          await supabase.from('audit_trail').insert({
+            user_id: user.id,
+            action: 'CREATE',
+            entity: 'validation_protocol',
+            entity_id: data[0].id,
+            details: {
+              new_data: {
+                protocol_type: newProtocol.protocol_type,
+                title: newProtocol.title,
+                status: newProtocol.status,
+                content: {
+                  description: newProtocol.content.description || '',
+                  test_cases_count: newProtocol.content.test_cases?.length || 0,
+                  test_cases_summary: `${newProtocol.content.test_cases?.length || 0} casos de prueba: ${(newProtocol.content.test_cases || []).map((tc: TestCase, idx: number) => `${idx+1}. ${tc.description}`).join('; ')}`
+                }
+              },
+              timestamp: new Date().toISOString(),
+              performed_by: {
+                id: user.id,
+                email: user.email
+              }
+            }
+          })
+        }
       }
 
       toast({
@@ -193,7 +314,9 @@ export default function ValidationProtocols() {
     setNewProtocol({
       protocol_type: protocol.protocol_type,
       title: protocol.title,
-      content: protocol.content || { description: '', test_cases: [] },
+      content: { 
+        description: protocol.content?.description || '',
+        test_cases: protocol.content?.test_cases || [] },
       status: protocol.status
     })
     setIsDialogOpen(true)
@@ -201,12 +324,53 @@ export default function ValidationProtocols() {
 
   const deleteProtocol = async (id: string) => {
     try {
+      // First, fetch the data before deleting
+      const { data: oldData, error: fetchError } = await supabase
+        .from('validation_protocols')
+        .select('*')
+        .eq('id', id)
+        .single()
+      
+      if (fetchError) throw fetchError
+      
+      // Then delete the data
       const { error } = await supabase
-        .from('app_a06fa33f4c_validation_protocols')
+        .from('validation_protocols')
         .delete()
         .eq('id', id)
 
       if (error) throw error
+
+      if (user) {
+        // Create a filtered version of oldData with only the required fields
+        const filteredData = {
+          protocol_type: oldData.type, // Map 'type' to 'protocol_type'
+          title: oldData.title,
+          status: oldData.status,
+          content: {
+            description: oldData.content?.description || '',
+            test_cases_count: Array.isArray(oldData.content?.test_cases) ? oldData.content.test_cases.length : 0,
+            test_cases_summary: Array.isArray(oldData.content?.test_cases) ? 
+              `${oldData.content.test_cases.length} casos de prueba: ${oldData.content.test_cases.map((tc: TestCase, idx: number) => `${idx+1}. ${tc.description}`).join('; ')}` : 
+              '0 casos de prueba'
+          }
+        };
+        
+        await supabase.from('audit_trail').insert({
+          user_id: user.id,
+          action: 'DELETE',
+          entity: 'validation_protocol',
+          entity_id: id,
+          details: {
+            deleted_data: filteredData,
+            timestamp: new Date().toISOString(),
+            performed_by: {
+              id: user.id,
+              email: user.email
+            }
+          }  
+        })
+      }
 
       toast({
         title: "Éxito",
@@ -230,8 +394,8 @@ export default function ValidationProtocols() {
       protocol_type: 'IQ',
       title: '',
       content: {
-        description: '',
-        test_cases: []
+        description: newProtocol.content.description,
+        test_cases: newProtocol.content.test_cases
       },
       status: 'DRAFT'
     })
@@ -413,20 +577,20 @@ export default function ValidationProtocols() {
                     <div>
                       <Label htmlFor="requirement">Requerimiento Asociado (Opcional)</Label>
                       <Select
-                        value={currentTestCase.requirement_id || ''}
+                        value={currentTestCase.requirement_id || 'none'}
                         onValueChange={(value) => setCurrentTestCase(prev => ({
                           ...prev,
-                          requirement_id: value || undefined
+                          requirement_id: value === "none" ? undefined : value
                         }))}
                       >
                         <SelectTrigger>
                           <SelectValue placeholder="Seleccionar requerimiento" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="">Ninguno</SelectItem>
+                          <SelectItem value="none">Ninguno</SelectItem>
                           {requirements.map(req => (
                             <SelectItem key={req.id} value={req.id}>
-                              {req.requirement_text.substring(0, 50)}...
+                              {req.requirement.substring(0, 50)}...
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -444,7 +608,7 @@ export default function ValidationProtocols() {
                     <p className="text-gray-500 text-sm">No hay casos de prueba definidos</p>
                   ) : (
                     <div className="space-y-2">
-                      {newProtocol.content.test_cases.map((testCase: TestCase, index: number) => (
+                      {(newProtocol.content.test_cases || []).map((testCase: TestCase, index: number) => (
                         <div key={testCase.id} className="border rounded-lg p-3 bg-white">
                           <div className="flex items-start justify-between">
                             <div className="flex-1">
@@ -485,6 +649,59 @@ export default function ValidationProtocols() {
           </DialogContent>
         </Dialog>
       </div>
+
+      <Dialog open={isViewDialogOpen} onOpenChange={setIsViewDialogOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Detalle del Protocolo</DialogTitle>
+            <DialogDescription>
+              Visualiza la información completa del protocolo de validación.
+            </DialogDescription>
+          </DialogHeader>
+          {viewingProtocol && (
+            <div className="space-y-4">
+              <div>
+                <Badge className={protocolTypeColors[viewingProtocol.protocol_type]}>
+                  {protocolTypeLabels[viewingProtocol.protocol_type]}
+                </Badge>
+                <Badge className={statusColors[viewingProtocol.status] + " ml-2"}>
+                  {viewingProtocol.status === 'DRAFT' ? 'Borrador' : 
+                  viewingProtocol.status === 'APPROVED' ? 'Aprobado' : 'Ejecutado'}
+                </Badge>
+              </div>
+              <h3 className="font-medium text-gray-900">{viewingProtocol.title}</h3>
+              <p className="text-sm text-gray-600">{viewingProtocol.content?.description || 'Sin descripción'}</p>
+              <div>
+                <span className="font-medium">Casos de prueba:</span>
+                <ul className="list-disc ml-5 mt-2">
+                  {(viewingProtocol.content?.test_cases || []).map((tc: TestCase, idx: number) => (
+                    <li key={tc.id} className="mb-2">
+                      <span className="font-semibold">Caso {idx + 1}:</span> {tc.description}
+                      <br />
+                      <span className="text-xs text-gray-500">Esperado: {tc.expected_result}</span>
+                      <br />
+                      <span className="text-xs text-gray-500">
+                        Requerimiento asociado: {
+                          (() => {
+                            if (!tc.requirement_id) return "Ninguno";
+                            const req = requirements.find(r => r.id === tc.requirement_id);
+                            return req
+                              ? `${req.prefix || ''}${req.prefix && req.number ? '-' : ''}${req.number || ''}`
+                              : "No encontrado";
+                          })()
+                        }
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <p className="text-xs text-gray-500">
+                Creado el {new Date(viewingProtocol.created_at!).toLocaleDateString('es-ES')}
+              </p>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <Card>
@@ -557,7 +774,7 @@ export default function ValidationProtocols() {
           ) : (
             <div className="space-y-4">
               {protocols.map((protocol) => {
-                const StatusIcon = statusIcons[protocol.status]
+                const StatusIcon = statusIcons[protocol.status] || Clock
                 return (
                   <div key={protocol.id} className="p-4 border border-gray-200 rounded-lg hover:shadow-md transition-shadow">
                     <div className="flex items-start justify-between">
@@ -572,18 +789,28 @@ export default function ValidationProtocols() {
                              protocol.status === 'APPROVED' ? 'Aprobado' : 'Ejecutado'}
                           </Badge>
                         </div>
-                        <h3 className="font-medium text-gray-900 mb-2">{protocol.title}</h3>
+                        <h3 className="font-medium text-gray-900 mb-2">{protocol.title} - Protocolo: {protocol.protocol_type} </h3>
                         <p className="text-sm text-gray-600 mb-2">
-                          {protocol.content?.description || 'Sin descripción'}
+                          {protocol.content?.description ?? 'Sin descripción'}
                         </p>
                         <div className="text-sm text-gray-500">
-                          <span className="font-medium">Casos de prueba:</span> {protocol.content?.test_cases?.length || 0}
+                          <span className="font-medium">Casos de prueba:</span> {Array.isArray(protocol.content?.test_cases) ? protocol.content.test_cases.length : 0}
                         </div>
                         <p className="text-xs text-gray-500 mt-2">
-                          Creado el {new Date(protocol.created_at!).toLocaleDateString('es-ES')}
+                          Creado el {new Date(protocol.created_at!).toLocaleString('es-ES')}
                         </p>
                       </div>
                       <div className="flex items-center space-x-2 ml-4">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setViewingProtocol(protocol)
+                            setIsViewDialogOpen(true)
+                          }}
+                        >
+                          <Eye className="h-4 w-4" />
+                        </Button>
                         <Button
                           variant="ghost"
                           size="sm"

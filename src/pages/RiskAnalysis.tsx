@@ -29,15 +29,19 @@ interface RiskAnalysis {
   mitigation_strategy: string
   created_at?: string
   requirement?: {
-    requirement_text: string
+    requirement: string
     category: string
+    prefix?: string
+    number?: string
   }
 }
 
 interface UserRequirement {
   id: string
-  requirement_text: string
+  requirement: string
   category: string
+  prefix: string
+  number: string
 }
 
 const riskColors = {
@@ -101,9 +105,9 @@ export default function RiskAnalysis() {
     try {
       // Fetch risk analyses
       const { data: analysesData, error: analysesError } = await supabase
-        .from('app_a06fa33f4c_risk_analyses')
+        .from('risk_analysis')
         .select('*')
-        .eq('user_id', user.id)
+        //.eq('user_id', user.id)
         .order('created_at', { ascending: false })
 
       if (analysesError) throw analysesError
@@ -112,8 +116,8 @@ export default function RiskAnalysis() {
       const analysesWithRequirements = await Promise.all(
         (analysesData || []).map(async (analysis) => {
           const { data: reqData } = await supabase
-            .from('app_a06fa33f4c_user_requirements')
-            .select('requirement_text, category')
+            .from('user_requirements')
+            .select('requirement, category, prefix, number')
             .eq('id', analysis.requirement_id)
             .single()
 
@@ -128,9 +132,9 @@ export default function RiskAnalysis() {
 
       // Fetch available requirements
       const { data: requirementsData, error: requirementsError } = await supabase
-        .from('app_a06fa33f4c_user_requirements')
-        .select('id, requirement_text, category')
-        .eq('user_id', user.id)
+        .from('user_requirements')
+        .select('id, requirement, category, prefix, number')
+        //.eq('user_id', user.id)
 
       if (requirementsError) throw requirementsError
 
@@ -159,9 +163,18 @@ export default function RiskAnalysis() {
 
     try {
       if (editingAnalysis) {
+        // Fetch old data for audit trail
+        const { data: oldData, error: oldError } = await supabase
+          .from('risk_analysis')
+          .select('*, requirement:requirement_id(requirement, category, prefix, number)')
+          .eq('id', editingAnalysis.id)
+          .single()
+
+        if (oldError) throw oldError
+
         // Update existing
         const { error } = await supabase
-          .from('app_a06fa33f4c_risk_analyses')
+          .from('risk_analysis')
           .update({
             requirement_id: newAnalysis.requirement_id,
             severity: newAnalysis.severity,
@@ -173,10 +186,65 @@ export default function RiskAnalysis() {
           .eq('id', editingAnalysis.id)
 
         if (error) throw error
+        
+        // Get requirement name for the new requirement_id
+        const { data: newReq } = await supabase
+          .from('user_requirements')
+          .select('requirement, category, prefix, number')
+          .eq('id', newAnalysis.requirement_id)
+          .single()
+        
+        // Create new data object with requirement info for comparison
+        const newData = {
+          requirement_id: newAnalysis.requirement_id,
+          severity: newAnalysis.severity,
+          probability: newAnalysis.probability,
+          detectability: newAnalysis.detectability,
+          risk_level: newAnalysis.risk_level,
+          mitigation_strategy: newAnalysis.mitigation_strategy,
+          requirement: newReq
+        };
+
+        // Create changes object for audit
+        function getChangedFields(oldObj: any, newObj: any) {
+          const changed: any = {};
+          for (const key in newObj) {
+            if (key === 'requirement') continue; // Skip the requirement object
+            
+            if (JSON.stringify(oldObj[key]) !== JSON.stringify(newObj[key])) {
+              if (key === 'requirement_id') {
+                changed['requirement'] = { 
+                  old: oldObj.requirement?.requirement || 'No disponible', 
+                  new: newObj.requirement?.requirement || 'No disponible' 
+                };
+              } else {
+                changed[key] = { old: oldObj[key], new: newObj[key] };
+              }
+            }
+          }
+          return changed;
+        }
+
+        const changes = getChangedFields(oldData, newData);
+
+        await supabase.from('audit_trail').insert({
+          user_id: user.id,
+          action: 'UPDATE',
+          entity: 'risk_analysis',
+          entity_id: editingAnalysis.id,
+          details: {
+            changes,
+            timestamp: new Date().toISOString(),
+            performed_by: {
+              id: user.id,
+              email: user.email
+            }
+          }
+        });
       } else {
         // Create new
-        const { error } = await supabase
-          .from('app_a06fa33f4c_risk_analyses')
+        const { data, error } = await supabase
+          .from('risk_analysis')
           .insert({
             requirement_id: newAnalysis.requirement_id,
             severity: newAnalysis.severity,
@@ -186,8 +254,36 @@ export default function RiskAnalysis() {
             mitigation_strategy: newAnalysis.mitigation_strategy,
             user_id: user.id
           })
+          .select()
 
         if (error) throw error
+        
+        if (data && data[0]) {
+          // Get requirement name for the audit log
+          const { data: reqData } = await supabase
+            .from('user_requirements')
+            .select('requirement, category, prefix, number')
+            .eq('id', newAnalysis.requirement_id)
+            .single()
+          
+          await supabase.from('audit_trail').insert({
+            user_id: user.id,
+            action: 'CREATE',
+            entity: 'risk_analysis',
+            entity_id: data[0].id,
+            details: {
+              new_data: {
+                ...newAnalysis,
+                requirement: reqData?.requirement || 'No disponible'
+              },
+              timestamp: new Date().toISOString(),
+              performed_by: {
+                id: user.id,
+                email: user.email
+              }
+            }
+          })
+        }
       }
 
       toast({
@@ -224,12 +320,49 @@ export default function RiskAnalysis() {
 
   const deleteAnalysis = async (id: string) => {
     try {
+      // First, fetch the data before deleting
+      const { data: oldData, error: fetchError } = await supabase
+        .from('risk_analysis')
+        .select('*, requirement:requirement_id(requirement, category, prefix, number)')
+        .eq('id', id)
+        .single()
+      
+      if (fetchError) throw fetchError
+      
+      // Then delete the data
       const { error } = await supabase
-        .from('app_a06fa33f4c_risk_analyses')
+        .from('risk_analysis')
         .delete()
         .eq('id', id)
 
       if (error) throw error
+
+      if (user) {
+        // Create a filtered version of oldData with only the required fields
+        const filteredData = {
+          severity: oldData.severity,
+          probability: oldData.probability,
+          detectability: oldData.detectability,
+          risk_level: oldData.risk_level,
+          mitigation_strategy: oldData.mitigation_strategy,
+          requirement: oldData.requirement?.requirement || 'No disponible'
+        };
+        
+        await supabase.from('audit_trail').insert({
+          user_id: user.id,
+          action: 'DELETE',
+          entity: 'risk_analysis',
+          entity_id: id,
+          details: {
+            deleted_data: filteredData,
+            timestamp: new Date().toISOString(),
+            performed_by: {
+              id: user.id,
+              email: user.email
+            }
+          }  
+        })
+      }
 
       toast({
         title: "Éxito",
@@ -311,7 +444,7 @@ export default function RiskAnalysis() {
                     {requirements.map(req => (
                       <SelectItem key={req.id} value={req.id}>
                         <div className="flex flex-col">
-                          <span className="truncate max-w-md">{req.requirement_text}</span>
+                          <span className="truncate max-w-md">{req.prefix}-{req.number} {req.requirement}</span>
                           <Badge variant="secondary" className="w-fit text-xs">
                             {req.category}
                           </Badge>
@@ -466,9 +599,14 @@ export default function RiskAnalysis() {
                             Riesgo {analysis.risk_level === 'HIGH' ? 'Alto' : analysis.risk_level === 'MEDIUM' ? 'Medio' : 'Bajo'}
                           </span>
                         </Badge>
+                        {analysis.requirement?.prefix && analysis.requirement?.number && (
+                          <Badge variant="outline">
+                            {analysis.requirement.prefix}-{analysis.requirement.number}
+                          </Badge>
+                        )}
                       </div>
                       <p className="font-medium text-gray-900 mb-2">
-                        {analysis.requirement?.requirement_text || 'Requerimiento no encontrado'}
+                        {analysis.requirement?.requirement || 'Requerimiento no encontrado'}
                       </p>
                       
                       <div className="grid grid-cols-3 gap-4 mb-3 text-sm">
@@ -498,7 +636,7 @@ export default function RiskAnalysis() {
                       </div>
 
                       <p className="text-xs text-gray-500 mt-2">
-                        Creado el {new Date(analysis.created_at!).toLocaleDateString('es-ES')}
+                        Creado el {new Date(analysis.created_at!).toLocaleString('es-ES')}
                       </p>
                     </div>
                     <div className="flex items-center space-x-2 ml-4">

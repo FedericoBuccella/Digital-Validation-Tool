@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
 import { User } from '@supabase/supabase-js'
-import { supabase } from '@/lib/supabase'
+import { supabase } from '../lib/supabase'
 
 interface AuthContextType {
   user: User | null
@@ -43,7 +43,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const signIn = async (email: string, password: string) => {
-    return await supabase.auth.signInWithPassword({ email, password })
+    // Primero autenticar con Supabase Auth
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+    
+    if (error) return { error }
+    
+    if (data.user) {
+      // Verificar que el usuario exista y esté activo en system_users
+      const { data: systemUser, error: systemError } = await supabase
+        .from('system_users')
+        .select('is_active, full_name, role')
+        .eq('id', data.user.id)
+        .single()
+      
+      if (systemError || !systemUser) {
+        // Si no existe en system_users, cerrar sesión y retornar error
+        await supabase.auth.signOut()
+        return { error: { message: 'Usuario no encontrado en el sistema' } }
+      }
+      
+      if (!systemUser.is_active) {
+        // Si el usuario está inactivo, cerrar sesión y retornar error
+        await supabase.auth.signOut()
+        return { error: { message: 'Usuario inactivo. Contacte al administrador.' } }
+      }
+    }
+    
+    return { data, error }
   }
 
   const signUp = async (email: string, password: string) => {

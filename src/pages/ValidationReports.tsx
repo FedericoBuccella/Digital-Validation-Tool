@@ -20,7 +20,8 @@ import {
   Eye,
   CheckCircle,
   Clock,
-  BarChart3
+  BarChart3,
+  Send
 } from 'lucide-react'
 
 interface ValidationReport {
@@ -66,6 +67,8 @@ export default function ValidationReports() {
   const { toast } = useToast()
   const [reports, setReports] = useState<ValidationReport[]>([])
   const [statistics, setStatistics] = useState<any>({})
+  const [systemUsers, setSystemUsers] = useState<any[]>([])
+  const [signatureRequests, setSignatureRequests] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editingReport, setEditingReport] = useState<ValidationReport | null>(null)
@@ -86,27 +89,55 @@ export default function ValidationReports() {
 
   useEffect(() => {
     fetchData()
+    fetchSystemUsers()
   }, [user])
+
+  const fetchSystemUsers = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('system_users')
+        .select('id, full_name, email') // Ajusta según las columnas de tu tabla
+
+      if (error) throw error
+      setSystemUsers(data || [])
+    } catch (error) {
+      console.error("Error cargando usuarios del sistema:", error)
+      toast({
+        title: "Error",
+        description: "No se pudieron cargar los usuarios del sistema",
+        variant: "destructive"
+      })
+    }
+  }
 
   const fetchData = async () => {
     if (!user) return
 
     try {
+      // Remove user_id filter so all users can see all reports
       const { data: reportsData, error: reportsError } = await supabase
-        .from('app_a06fa33f4c_validation_reports')
+        .from('validation_reports')
         .select('*')
-        .eq('user_id', user.id)
         .order('created_at', { ascending: false })
 
       if (reportsError) throw reportsError
 
-      setReports(reportsData || [])
+      // Fetch signature requests to check which reports already have requests
+      const { data: signatureRequestsData, error: signatureRequestsError } = await supabase
+        .from('signature_requests')
+        .select('report_id, status')
 
+      if (signatureRequestsError) throw signatureRequestsError
+
+      setReports(reportsData || [])
+      setSignatureRequests(signatureRequestsData || [])
+
+      // Remove user_id filters from statistics queries so they show global data
       const [requirementsResult, protocolsResult, traceabilityResult, riskAnalysesResult] = await Promise.all([
-        supabase.from('app_a06fa33f4c_user_requirements').select('*', { count: 'exact' }).eq('user_id', user.id),
-        supabase.from('app_a06fa33f4c_validation_protocols').select('*', { count: 'exact' }).eq('user_id', user.id),
-        supabase.from('app_a06fa33f4c_traceability_matrix').select('*').eq('user_id', user.id),
-        supabase.from('app_a06fa33f4c_risk_analyses').select('*').eq('user_id', user.id)
+        supabase.from('user_requirements').select('*', { count: 'exact' }),
+        supabase.from('validation_protocols').select('*', { count: 'exact' }),
+        supabase.from('traceability_matrix').select('*'),
+        supabase.from('risk_analysis').select('*')
       ])
 
       const traceabilityStats = {
@@ -164,8 +195,18 @@ export default function ValidationReports() {
       }
 
       if (editingReport) {
+        // Fetch old data for audit trail
+        const { data: oldData, error: oldError } = await supabase
+          .from('validation_reports')
+          .select('*')
+          .eq('id', editingReport.id)
+          .single()
+
+        if (oldError) throw oldError
+
+        // Update existing
         const { error } = await supabase
-          .from('app_a06fa33f4c_validation_reports')
+          .from('validation_reports')
           .update({
             title: updatedReport.title,
             content: updatedReport.content,
@@ -174,17 +215,110 @@ export default function ValidationReports() {
           .eq('id', editingReport.id)
 
         if (error) throw error
+
+        // Create changes object for audit
+        function getChangedFields(oldObj: any, newObj: any) {
+          const changed: any = {};
+          
+          // Check title changes
+          if (oldObj.title !== newObj.title) {
+            changed.title = { old: oldObj.title, new: newObj.title };
+          }
+          
+          // Check status changes
+          if (oldObj.status !== newObj.status) {
+            changed.status = { old: oldObj.status, new: newObj.status };
+          }
+          
+          // Check metadata changes
+          const oldMetadata = oldObj.content?.metadata || {};
+          const newMetadata = newObj.content?.metadata || {};
+          
+          if (oldMetadata.created_by !== newMetadata.created_by) {
+            changed.created_by = { old: oldMetadata.created_by, new: newMetadata.created_by };
+          }
+          if (oldMetadata.reviewed_by !== newMetadata.reviewed_by) {
+            changed.reviewed_by = { old: oldMetadata.reviewed_by, new: newMetadata.reviewed_by };
+          }
+          if (oldMetadata.approved_by !== newMetadata.approved_by) {
+            changed.approved_by = { old: oldMetadata.approved_by, new: newMetadata.approved_by };
+          }
+          if (oldMetadata.version !== newMetadata.version) {
+            changed.version = { old: oldMetadata.version, new: newMetadata.version };
+          }
+          
+          // Check if sections content changed
+          const oldSections = oldObj.content?.sections || [];
+          const newSections = newObj.content?.sections || [];
+          
+          if (JSON.stringify(oldSections) !== JSON.stringify(newSections)) {
+            changed.content_sections = { 
+              old: `${oldSections.length} secciones`, 
+              new: `${newSections.length} secciones` 
+            };
+          }
+          
+          return changed;
+        }
+
+        const changes = getChangedFields(oldData, updatedReport);
+
+        // Only create audit trail if there are actual changes
+        if (Object.keys(changes).length > 0) {
+          await supabase.from('audit_trail').insert({
+            user_id: user.id,
+            action: 'UPDATE',
+            entity: 'validation_reports',
+            entity_id: editingReport.id,
+            details: {
+              changes,
+              report_title: updatedReport.title,
+              timestamp: new Date().toISOString(),
+              performed_by: {
+                id: user.id,
+                email: user.email
+              }
+            }
+          });
+        }
       } else {
-        const { error } = await supabase
-          .from('app_a06fa33f4c_validation_reports')
+        // Create new
+        const { data, error } = await supabase
+          .from('validation_reports')
           .insert({
             title: updatedReport.title,
             content: updatedReport.content,
             status: updatedReport.status,
             user_id: user.id
           })
+          .select()
 
         if (error) throw error
+
+        if (data && data[0]) {
+          await supabase.from('audit_trail').insert({
+            user_id: user.id,
+            action: 'CREATE',
+            entity: 'validation_reports',
+            entity_id: data[0].id,
+            details: {
+              new_data: {
+                title: updatedReport.title,
+                status: updatedReport.status,
+                created_by: updatedReport.content.metadata.created_by,
+                reviewed_by: updatedReport.content.metadata.reviewed_by,
+                approved_by: updatedReport.content.metadata.approved_by,
+                version: updatedReport.content.metadata.version,
+                sections_count: updatedReport.content.sections.length
+              },
+              timestamp: new Date().toISOString(),
+              performed_by: {
+                id: user.id,
+                email: user.email
+              }
+            }
+          })
+        }
       }
 
       toast({
@@ -210,13 +344,13 @@ export default function ValidationReports() {
     setEditingReport(report)
     setNewReport({
       title: report.title,
-      content: report.content || {
-        sections: defaultSections,
+      content: {
+        sections: report.content?.sections ?? defaultSections,
         metadata: {
-          created_by: '',
-          reviewed_by: '',
-          approved_by: '',
-          version: '1.0'
+          created_by: report.content?.metadata?.created_by ?? '',
+          reviewed_by: report.content?.metadata?.reviewed_by ?? '',
+          approved_by: report.content?.metadata?.approved_by ?? '',
+          version: report.content?.metadata?.version ?? '1.0'
         }
       },
       status: report.status
@@ -226,12 +360,51 @@ export default function ValidationReports() {
 
   const deleteReport = async (id: string) => {
     try {
+      // First, fetch the data before deleting
+      const { data: oldData, error: fetchError } = await supabase
+        .from('validation_reports')
+        .select('*')
+        .eq('id', id)
+        .single()
+      
+      if (fetchError) throw fetchError
+      
+      // Then delete the data
       const { error } = await supabase
-        .from('app_a06fa33f4c_validation_reports')
+        .from('validation_reports')
         .delete()
         .eq('id', id)
 
       if (error) throw error
+
+      if (user) {
+        // Create a filtered version of oldData with only the required fields
+        const filteredData = {
+          title: oldData.title,
+          status: oldData.status,
+          created_by: oldData.content?.metadata?.created_by,
+          reviewed_by: oldData.content?.metadata?.reviewed_by,
+          approved_by: oldData.content?.metadata?.approved_by,
+          version: oldData.content?.metadata?.version,
+          sections_count: oldData.content?.sections?.length || 0,
+          created_at: oldData.created_at
+        };
+        
+        await supabase.from('audit_trail').insert({
+          user_id: user.id,
+          action: 'DELETE',
+          entity: 'validation_reports',
+          entity_id: id,
+          details: {
+            deleted_data: filteredData,
+            timestamp: new Date().toISOString(),
+            performed_by: {
+              id: user.id,
+              email: user.email
+            }
+          }  
+        })
+      }
 
       toast({
         title: "Éxito",
@@ -290,6 +463,137 @@ export default function ValidationReports() {
         }
       }
     }))
+  }
+
+  // Check if a report already has signature requests
+  const hasSignatureRequests = (reportId: string) => {
+    return signatureRequests.some(req => req.report_id === reportId)
+  }
+
+  const requestSignatures = async (reportId: string, reportContent: any) => {
+    if (!user) return
+
+    // Check if signatures have already been requested for this report
+    if (hasSignatureRequests(reportId)) {
+      toast({
+        title: "Información",
+        description: "Las firmas ya han sido solicitadas para este reporte",
+        variant: "default"
+      })
+      return
+    }
+
+    try {
+      const metadata = reportContent?.metadata || {}
+      const signatureRequestsToInsert = []
+
+      // Crear solicitudes de firma para cada usuario asignado
+      if (metadata.created_by) {
+        const creatorUser = systemUsers.find(u => u.full_name === metadata.created_by)
+        if (creatorUser) {
+          signatureRequestsToInsert.push({
+            report_id: reportId,
+            requester_id: user.id,
+            signer_email: creatorUser.email,
+            signer_role: 'CREATOR',
+            token: crypto.randomUUID(),
+            expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 días
+            status: 'PENDING'
+          })
+        }
+      }
+
+      if (metadata.reviewed_by) {
+        const reviewerUser = systemUsers.find(u => u.full_name === metadata.reviewed_by)
+        if (reviewerUser) {
+          signatureRequestsToInsert.push({
+            report_id: reportId,
+            requester_id: user.id,
+            signer_email: reviewerUser.email,
+            signer_role: 'REVIEWER',
+            token: crypto.randomUUID(),
+            expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 días
+            status: 'PENDING'
+          })
+        }
+      }
+
+      if (metadata.approved_by) {
+        const approverUser = systemUsers.find(u => u.full_name === metadata.approved_by)
+        if (approverUser) {
+          signatureRequestsToInsert.push({
+            report_id: reportId,
+            requester_id: user.id,
+            signer_email: approverUser.email,
+            signer_role: 'APPROVER',
+            token: crypto.randomUUID(),
+            expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 días
+            status: 'PENDING'
+          })
+        }
+      }
+
+      if (signatureRequestsToInsert.length === 0) {
+        toast({
+          title: "Información",
+          description: "No hay usuarios asignados para solicitar firmas",
+          variant: "default"
+        })
+        return
+      }
+
+      // Insertar todas las solicitudes de firma
+      const { data: insertedRequests, error } = await supabase
+        .from('signature_requests')
+        .insert(signatureRequestsToInsert)
+        .select()
+
+      if (error) throw error
+
+      // Create audit trail for signature requests
+      if (user && insertedRequests) {
+        const reportTitle = reports.find(r => r.id === reportId)?.title || 'Reporte sin título';
+        
+        await supabase.from('audit_trail').insert({
+          user_id: user.id,
+          action: 'CREATE',
+          entity: 'signature_requests',
+          entity_id: reportId, // Using report ID as the main entity
+          details: {
+            new_data: {
+              report_title: reportTitle,
+              signature_requests_created: signatureRequestsToInsert.length,
+              signers: signatureRequestsToInsert.map(req => ({
+                email: req.signer_email,
+                role: req.signer_role
+              })),
+              expires_at: signatureRequestsToInsert[0].expires_at
+            },
+            action_performed: 'Signature Requests Sent',
+            timestamp: new Date().toISOString(),
+            performed_by: {
+              id: user.id,
+              email: user.email
+            }
+          }
+        })
+      }
+
+      toast({
+        title: "Éxito",
+        description: `Se enviaron ${signatureRequestsToInsert.length} solicitudes de firma electrónica`
+      })
+
+      // Refresh data to update the button state
+      fetchData()
+    } catch (error) {
+      console.error('Error requesting signatures:', error)
+      toast({
+        title: "Error",
+        description: "No se pudieron enviar las solicitudes de firma",
+        variant: "destructive"
+      })
+    }
   }
 
   return (
@@ -356,33 +660,65 @@ export default function ValidationReports() {
                 </div>
 
                 <div className="grid grid-cols-3 gap-4">
-                  <div>
-                    <Label htmlFor="created_by">Creado por</Label>
-                    <Input
-                      id="created_by"
-                      value={newReport.content.metadata.created_by}
-                      onChange={(e) => updateMetadata('created_by', e.target.value)}
-                      placeholder="Nombre del autor"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="reviewed_by">Revisado por</Label>
-                    <Input
-                      id="reviewed_by"
-                      value={newReport.content.metadata.reviewed_by}
-                      onChange={(e) => updateMetadata('reviewed_by', e.target.value)}
-                      placeholder="Nombre del revisor"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="approved_by">Aprobado por</Label>
-                    <Input
-                      id="approved_by"
-                      value={newReport.content.metadata.approved_by}
-                      onChange={(e) => updateMetadata('approved_by', e.target.value)}
-                      placeholder="Nombre del aprobador"
-                    />
-                  </div>
+                  {/* 🔹 Creado por */}
+              <div>
+                <Label htmlFor="created_by">Creado por</Label>
+                <Select
+                  value={newReport.content.metadata.created_by}
+                  onValueChange={(value) => updateMetadata('created_by', value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecciona un usuario" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {systemUsers.map((u) => (
+                      <SelectItem key={u.id} value={u.full_name}>
+                        {u.full_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* 🔹 Revisado por */}
+              <div>
+                <Label htmlFor="reviewed_by">Revisado por</Label>
+                <Select
+                  value={newReport.content.metadata.reviewed_by}
+                  onValueChange={(value) => updateMetadata('reviewed_by', value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecciona un usuario" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {systemUsers.map((u) => (
+                      <SelectItem key={u.id} value={u.full_name}>
+                        {u.full_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* 🔹 Aprobado por */}
+              <div>
+                <Label htmlFor="approved_by">Aprobado por</Label>
+                <Select
+                  value={newReport.content.metadata.approved_by}
+                  onValueChange={(value) => updateMetadata('approved_by', value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecciona un usuario" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {systemUsers.map((u) => (
+                      <SelectItem key={u.id} value={u.full_name}>
+                        {u.full_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
                 </div>
 
                 <div>
@@ -624,10 +960,35 @@ export default function ValidationReports() {
                           <p><span className="font-medium">Versión:</span> {report.content?.metadata?.version || 'N/A'}</p>
                         </div>
                         <p className="text-xs text-gray-500">
-                          Creado el {new Date(report.created_at!).toLocaleDateString('es-ES')}
+                          Creado el {new Date(report.created_at!).toLocaleString('es-ES')}
                         </p>
                       </div>
                       <div className="flex items-center space-x-2 ml-4">
+                        {report.content?.metadata?.created_by || 
+                         report.content?.metadata?.reviewed_by || 
+                         report.content?.metadata?.approved_by ? (
+                          hasSignatureRequests(report.id!) ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled
+                              className="text-green-600 border-green-200 bg-green-50"
+                            >
+                              <CheckCircle className="h-4 w-4 mr-1" />
+                              Firmas Solicitadas
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => requestSignatures(report.id!, report.content)}
+                              className="text-blue-600 hover:text-blue-700"
+                            >
+                              <Send className="h-4 w-4 mr-1" />
+                              Solicitar Firmas
+                            </Button>
+                          )
+                        ) : null}
                         <Button
                           variant="ghost"
                           size="sm"

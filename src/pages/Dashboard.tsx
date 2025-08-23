@@ -11,14 +11,17 @@ import {
   Table,
   FileText,
   TrendingUp,
-  CheckCircle
+  CheckCircle,
+  CircuitBoard,
+  NotebookPen
 } from 'lucide-react'
 
 interface DashboardStats {
   processMaps: number
   userRequirements: number
-  riskAnalyses: number
+  riskAnalysis: number
   validationProtocols: number
+  executionProtocols: number
   traceabilityEntries: number
   validationReports: number
 }
@@ -28,8 +31,9 @@ export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats>({
     processMaps: 0,
     userRequirements: 0,
-    riskAnalyses: 0,
+    riskAnalysis: 0,
     validationProtocols: 0,
+    executionProtocols: 0,
     traceabilityEntries: 0,
     validationReports: 0
   })
@@ -46,24 +50,25 @@ export default function Dashboard() {
       const [
         processMapsResult,
         userRequirementsResult,
-        riskAnalysesResult,
+        riskAnalysisResult,
         validationProtocolsResult,
         traceabilityResult,
         validationReportsResult
       ] = await Promise.all([
-        supabase.from('app_a06fa33f4c_process_maps').select('id', { count: 'exact' }).eq('user_id', user.id),
-        supabase.from('app_a06fa33f4c_user_requirements').select('id', { count: 'exact' }).eq('user_id', user.id),
-        supabase.from('app_a06fa33f4c_risk_analyses').select('id', { count: 'exact' }).eq('user_id', user.id),
-        supabase.from('app_a06fa33f4c_validation_protocols').select('id', { count: 'exact' }).eq('user_id', user.id),
-        supabase.from('app_a06fa33f4c_traceability_matrix').select('id', { count: 'exact' }).eq('user_id', user.id),
-        supabase.from('app_a06fa33f4c_validation_reports').select('id', { count: 'exact' }).eq('user_id', user.id)
+        supabase.from('process_maps').select('id', { count: 'exact' }),//.eq('user_id', user.id),
+        supabase.from('user_requirements').select('id', { count: 'exact' }),//.eq('user_id', user.id),
+        supabase.from('risk_analysis').select('id', { count: 'exact' }),//.eq('user_id', user.id),
+        supabase.from('validation_protocols').select('id', { count: 'exact' }),//.eq('user_id', user.id),
+        supabase.from('traceability_matrix').select('id', { count: 'exact' }),//.eq('user_id', user.id),
+        supabase.from('validation_reports').select('id', { count: 'exact' }),//.eq('user_id', user.id)
       ])
 
       setStats({
         processMaps: processMapsResult.count || 0,
         userRequirements: userRequirementsResult.count || 0,
-        riskAnalyses: riskAnalysesResult.count || 0,
+        riskAnalysis: riskAnalysisResult.count || 0,
         validationProtocols: validationProtocolsResult.count || 0,
+        executionProtocols: validationProtocolsResult.count || 0,
         traceabilityEntries: traceabilityResult.count || 0,
         validationReports: validationReportsResult.count || 0
       })
@@ -91,7 +96,7 @@ export default function Dashboard() {
     },
     {
       title: 'Análisis de Riesgo',
-      value: stats.riskAnalyses,
+      value: stats.riskAnalysis,
       icon: AlertTriangle,
       color: 'text-orange-600',
       bgColor: 'bg-orange-100'
@@ -102,6 +107,13 @@ export default function Dashboard() {
       icon: FileCheck,
       color: 'text-purple-600',
       bgColor: 'bg-purple-100'
+    },
+     {
+      title: 'Protocolos Ejecutados',
+      value: stats.executionProtocols,
+      icon: CircuitBoard,
+      color: 'text-red-600',
+      bgColor: 'bg-red-100'
     },
     {
       title: 'Matriz de Trazabilidad',
@@ -139,6 +151,15 @@ export default function Dashboard() {
       </div>
     )
   }
+
+  if (!user) {
+  return (
+    <div className="flex flex-col items-center justify-center h-96">
+      <h2 className="text-xl font-semibold mb-2">No has iniciado sesión</h2>
+      <p className="text-gray-500">Por favor, inicia sesión para ver el dashboard.</p>
+    </div>
+  )
+}
 
   return (
     <div className="space-y-6">
@@ -195,8 +216,8 @@ export default function Dashboard() {
             </div>
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium">Análisis de Riesgo</span>
-              <Badge variant={stats.riskAnalyses > 0 ? "default" : "secondary"}>
-                {stats.riskAnalyses > 0 ? "Completado" : "Pendiente"}
+              <Badge variant={stats.riskAnalysis > 0 ? "default" : "secondary"}>
+                {stats.riskAnalysis > 0 ? "Completado" : "Pendiente"}
               </Badge>
             </div>
             <div className="flex items-center justify-between">
