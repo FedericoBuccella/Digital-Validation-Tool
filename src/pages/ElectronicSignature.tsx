@@ -1,17 +1,14 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase, SignatureRequest, ElectronicSignature as ElectronicSignatureType, ValidationReport, SystemUser } from '../lib/supabase'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../hooks/use-toast'
 import jsPDF from 'jspdf'
 import {
   PenTool,
-  Mail,
   Clock,
   CheckCircle,
   XCircle,
   AlertTriangle,
-  Download,
-  Eye,
   FileSignature,
   Send,
   Users,
@@ -446,39 +443,6 @@ export default function ElectronicSignature() {
         variant: "destructive"
       })
     }
-  }
-
-  const downloadSignatureReport = (signature: ExtendedElectronicSignature) => {
-    const reportData = {
-      signature_id: signature.id,
-      report_title: signature.validation_reports?.title,
-      signer: {
-        name: signature.signer_name,
-        email: signature.signer_email,
-        role: signature.role
-      },
-      signed_at: signature.signed_at,
-      signature_hash: signature.signature_hash,
-      document_hash: signature.document_hash,
-      comments: signature.comments,
-      ip_address: signature.ip_address,
-      user_agent: signature.user_agent,
-      verification: {
-        timestamp: new Date().toISOString(),
-        status: 'VERIFIED',
-        authentication_method: 'Password Verified'
-      }
-    }
-
-    const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `signature-report-${signature.id}.json`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
   }
 
   const downloadPDFSignatureReport = (signature: ExtendedElectronicSignature) => {

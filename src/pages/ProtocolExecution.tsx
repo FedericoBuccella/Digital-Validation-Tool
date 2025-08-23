@@ -6,8 +6,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/hooks/use-toast'
@@ -20,7 +19,6 @@ import {
   Clock,
   FileText,
   Eye,
-  Edit2,
   Filter,
   BarChart3,
   AlertTriangle,
@@ -109,7 +107,7 @@ export default function ProtocolExecution() {
   // State management
   const [protocols, setProtocols] = useState<ValidationProtocol[]>([])
   const [selectedProtocol, setSelectedProtocol] = useState<ValidationProtocol | null>(null)
-  const [executionSessions, setExecutionSessions] = useState<ExecutionSession[]>([])
+  const [_, setExecutionSessions] = useState<ExecutionSession[]>([])
   const [currentSession, setCurrentSession] = useState<ExecutionSession | null>(null)
   const [executions, setExecutions] = useState<ProtocolExecution[]>([])
   const [loading, setLoading] = useState(true)
@@ -776,7 +774,7 @@ export default function ProtocolExecution() {
   const updateTraceabilityMatrix = async (executionData: ProtocolExecution) => {
     try {
       // First check if the traceability_matrix table exists
-      const { data: tableCheck, error: tableError } = await supabase
+      const { error: tableError } = await supabase
         .from('traceability_matrix')
         .select('id')
         .limit(1)
@@ -863,7 +861,7 @@ export default function ProtocolExecution() {
         const fileName = `evidence_${Date.now()}_${Math.random().toString(36).substring(2)}_${file.name}`
         const filePath = `protocol_evidence/${user!.id}/${fileName}`
 
-        const { data, error } = await supabase.storage
+        const { error } = await supabase.storage
           .from('evidence_files')
           .upload(filePath, file)
 

@@ -1,4 +1,3 @@
-import React from 'react'
 import logo from '@/assets/logo.png'
 import { Link, useLocation } from 'react-router-dom'
 import { cn } from '@/lib/utils'
@@ -11,7 +10,6 @@ import {
   Table,
   FileText,
   ChevronLeft,
-  ChevronRight,
   CircuitBoard,
   User,
 } from 'lucide-react'

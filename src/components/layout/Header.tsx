@@ -1,7 +1,6 @@
-import React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { Menu, User, LogOut, NotebookPen } from 'lucide-react'
+import { Menu, User, LogOut } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
