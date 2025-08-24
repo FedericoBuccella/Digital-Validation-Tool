@@ -120,7 +120,6 @@ export default function ValidationProtocols() {
       const { data: requirementsData, error: requirementsError } = await supabase
         .from('user_requirements')
         .select('*')
-        //.eq('user_id', user.id)
 
       if (requirementsError) throw requirementsError
 
