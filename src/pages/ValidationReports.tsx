@@ -19,7 +19,6 @@ import {
   CheckCircle,
   Clock,
   Send,
-  XCircle,
   RotateCcw,
   AlertTriangle
 } from 'lucide-react'
@@ -69,7 +68,7 @@ export default function ValidationReports() {
   const [statistics, setStatistics] = useState<any>({})
   const [systemUsers, setSystemUsers] = useState<any[]>([])
   const [signatureRequests, setSignatureRequests] = useState<any[]>([])
-  const [signatures, setSignatures] = useState<any[]>([])
+  const [ _ , setSignatures] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editingReport, setEditingReport] = useState<ValidationReport | null>(null)

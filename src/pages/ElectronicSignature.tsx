@@ -15,8 +15,7 @@ import {
   History,
   Lock,
   Loader2,
-  FileText,
-  RotateCcw
+  FileText
 } from 'lucide-react'
 import {
   Card,
@@ -484,69 +483,6 @@ export default function ElectronicSignature() {
       toast({
         title: "Error",
         description: "No se pudo rechazar la solicitud",
-        variant: "destructive"
-      })
-    }
-  }
-
-  const restartCircuit = async (reportId: string) => {
-    if (!confirm('¿Está seguro de reiniciar el circuito de firmas? Esto restablecerá todas las solicitudes del reporte a estado pendiente.')) return
-
-    try {
-      // Get report details for audit trail
-      const { data: reportData, error: reportError } = await supabase
-        .from('validation_reports')
-        .select('title')
-        .eq('id', reportId)
-        .single()
-
-      if (reportError) throw reportError
-
-      // Reset all signature requests for this report to PENDING
-      const { error } = await supabase
-        .from('signature_requests')
-        .update({
-          status: 'PENDING',
-          rejection_reason: null,
-          rejected_at: null,
-          updated_at: new Date().toISOString()
-        })
-        .eq('report_id', reportId)
-        .in('status', ['REJECTED', 'BLOCKED'])
-
-      if (error) throw error
-
-      // Create audit trail for circuit restart
-      if (user) {
-        await supabase.from('audit_trail').insert({
-          user_id: user.id,
-          action: 'UPDATE',
-          entity: 'signature_requests',
-          entity_id: reportId,
-          details: {
-            report_title: reportData?.title || 'Reporte sin título',
-            action_performed: 'Circuit Restarted',
-            description: 'All signature requests reset to PENDING status',
-            timestamp: new Date().toISOString(),
-            performed_by: {
-              id: user.id,
-              email: user.email
-            }
-          }
-        })
-      }
-
-      toast({
-        title: "Éxito",
-        description: "Circuito de firmas reiniciado exitosamente"
-      })
-
-      fetchData()
-    } catch (error) {
-      console.error('Error restarting circuit:', error)
-      toast({
-        title: "Error",
-        description: "No se pudo reiniciar el circuito",
         variant: "destructive"
       })
     }
