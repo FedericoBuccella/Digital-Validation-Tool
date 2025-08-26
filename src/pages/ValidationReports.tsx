@@ -18,7 +18,10 @@ import {
   FileText,
   CheckCircle,
   Clock,
-  Send
+  Send,
+  XCircle,
+  RotateCcw,
+  AlertTriangle
 } from 'lucide-react'
 
 interface ValidationReport {
@@ -66,6 +69,7 @@ export default function ValidationReports() {
   const [statistics, setStatistics] = useState<any>({})
   const [systemUsers, setSystemUsers] = useState<any[]>([])
   const [signatureRequests, setSignatureRequests] = useState<any[]>([])
+  const [signatures, setSignatures] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [isDialogOpen, setIsDialogOpen] = useState(false)
   const [editingReport, setEditingReport] = useState<ValidationReport | null>(null)
@@ -122,12 +126,20 @@ export default function ValidationReports() {
       // Fetch signature requests to check which reports already have requests
       const { data: signatureRequestsData, error: signatureRequestsError } = await supabase
         .from('signature_requests')
-        .select('report_id, status')
+        .select('*')
 
       if (signatureRequestsError) throw signatureRequestsError
 
+      // Fetch signatures
+      const { data: signaturesData, error: signaturesError } = await supabase
+        .from('electronic_signatures')
+        .select('*')
+
+      if (signaturesError) throw signaturesError
+
       setReports(reportsData || [])
       setSignatureRequests(signatureRequestsData || [])
+      setSignatures(signaturesData || [])
 
       // Remove user_id filters from statistics queries so they show global data
       const [requirementsResult, protocolsResult, traceabilityResult, riskAnalysesResult] = await Promise.all([
@@ -465,6 +477,150 @@ export default function ValidationReports() {
   // Check if a report already has signature requests
   const hasSignatureRequests = (reportId: string) => {
     return signatureRequests.some(req => req.report_id === reportId)
+  }
+
+  // Check if any signature was rejected for a report
+  const hasRejectedSignatures = (reportId: string) => {
+    return signatureRequests.some(req => req.report_id === reportId && req.status === 'REJECTED')
+  }
+
+  // Get rejection details for a report
+  const getRejectionInfo = (reportId: string) => {
+    const rejectedRequests = signatureRequests.filter(req => 
+      req.report_id === reportId && req.status === 'REJECTED'
+    )
+    return rejectedRequests
+  }
+
+  const restartSignatureCircuit = async (reportId: string) => {
+    if (!user) return
+    
+    if (!confirm('¿Está seguro de reiniciar el circuito de firmas? Esto eliminará todas las solicitudes existentes y creará nuevas.')) return
+
+    try {
+      // Get the report data
+      const reportData = reports.find(r => r.id === reportId)
+      if (!reportData) throw new Error('Report not found')
+
+      // Get existing signature requests for audit trail
+      const existingRequests = signatureRequests.filter(req => req.report_id === reportId)
+
+      // Delete existing signature requests and signatures
+      const { error: deleteRequestsError } = await supabase
+        .from('signature_requests')
+        .delete()
+        .eq('report_id', reportId)
+
+      if (deleteRequestsError) throw deleteRequestsError
+
+      const { error: deleteSignaturesError } = await supabase
+        .from('electronic_signatures')
+        .delete()
+        .eq('report_id', reportId)
+
+      if (deleteSignaturesError) throw deleteSignaturesError
+
+      // Recreate signature requests
+      const metadata = reportData.content?.metadata || {}
+      const signatureRequestsToInsert = []
+
+      if (metadata.created_by) {
+        const creatorUser = systemUsers.find(u => u.full_name === metadata.created_by)
+        if (creatorUser) {
+          signatureRequestsToInsert.push({
+            report_id: reportId,
+            requester_id: user.id,
+            signer_email: creatorUser.email,
+            signer_role: 'CREATOR',
+            token: crypto.randomUUID(),
+            expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+            status: 'PENDING'
+          })
+        }
+      }
+
+      if (metadata.reviewed_by) {
+        const reviewerUser = systemUsers.find(u => u.full_name === metadata.reviewed_by)
+        if (reviewerUser) {
+          signatureRequestsToInsert.push({
+            report_id: reportId,
+            requester_id: user.id,
+            signer_email: reviewerUser.email,
+            signer_role: 'REVIEWER',
+            token: crypto.randomUUID(),
+            expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+            status: 'PENDING'
+          })
+        }
+      }
+
+      if (metadata.approved_by) {
+        const approverUser = systemUsers.find(u => u.full_name === metadata.approved_by)
+        if (approverUser) {
+          signatureRequestsToInsert.push({
+            report_id: reportId,
+            requester_id: user.id,
+            signer_email: approverUser.email,
+            signer_role: 'APPROVER',
+            token: crypto.randomUUID(),
+            expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+            status: 'PENDING'
+          })
+        }
+      }
+
+      if (signatureRequestsToInsert.length > 0) {
+        const { error: insertError } = await supabase
+          .from('signature_requests')
+          .insert(signatureRequestsToInsert)
+
+        if (insertError) throw insertError
+      }
+
+      // Create audit trail for circuit restart
+      await supabase.from('audit_trail').insert({
+        user_id: user.id,
+        action: 'UPDATE',
+        entity: 'signature_requests',
+        entity_id: reportId,
+        details: {
+          action_performed: 'Signature Circuit Restarted',
+          report_title: reportData.title || 'Reporte sin título',
+          deleted_requests_count: existingRequests.length,
+          new_requests_count: signatureRequestsToInsert.length,
+          deleted_requests: existingRequests.map(req => ({
+            id: req.id,
+            signer_email: req.signer_email,
+            status: req.status,
+            rejected_by: req.rejected_by,
+            rejection_reason: req.rejection_reason
+          })),
+          new_requests: signatureRequestsToInsert.map(req => ({
+            signer_email: req.signer_email,
+            signer_role: req.signer_role
+          })),
+          timestamp: new Date().toISOString(),
+          performed_by: {
+            id: user.id,
+            email: user.email
+          }
+        }
+      })
+
+      toast({
+        title: "Éxito",
+        description: "Circuito de firmas reiniciado correctamente"
+      })
+
+      fetchData()
+    } catch (error) {
+      console.error('Error restarting signature circuit:', error)
+      toast({
+        title: "Error",
+        description: "No se pudo reiniciar el circuito de firmas",
+        variant: "destructive"
+      })
+    }
   }
 
   const requestSignatures = async (reportId: string, reportContent: any) => {
@@ -921,94 +1077,148 @@ export default function ValidationReports() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {loading ? (
-            <div className="space-y-4">
-              {[...Array(3)].map((_, i) => (
-                <div key={i} className="p-4 border rounded-lg animate-pulse">
-                  <div className="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
-                  <div className="h-3 bg-gray-200 rounded w-1/2"></div>
+  {loading ? (
+    <div className="space-y-4">
+      {[...Array(3)].map((_, i) => (
+        <div key={i} className="p-4 border rounded-lg animate-pulse">
+          <div className="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
+          <div className="h-3 bg-gray-200 rounded w-1/2"></div>
+        </div>
+      ))}
+    </div>
+  ) : reports.length === 0 ? (
+    <div className="text-center py-8">
+      <FileText className="h-16 w-16 text-gray-300 mx-auto mb-4" />
+      <p className="text-gray-500">
+        No hay reportes de validación creados. Crea el primero.
+      </p>
+    </div>
+  ) : (
+    <div className="space-y-4">
+      {reports.map((report) => {
+        const StatusIcon = statusIcons[report.status]
+        return (
+          <div
+            key={report.id}
+            className="p-4 border border-gray-200 rounded-lg hover:shadow-md transition-shadow"
+          >
+            <div className="flex items-start justify-between">
+              {/* 📌 Info del reporte */}
+              <div className="flex-1">
+                <div className="flex items-center space-x-2 mb-2">
+                  <Badge className={statusColors[report.status]}>
+                    <StatusIcon className="h-3 w-3 mr-1" />
+                    {report.status === "DRAFT" ? "Borrador" : "Final"}
+                  </Badge>
                 </div>
-              ))}
-            </div>
-          ) : reports.length === 0 ? (
-            <div className="text-center py-8">
-              <FileText className="h-16 w-16 text-gray-300 mx-auto mb-4" />
-              <p className="text-gray-500">
-                No hay reportes de validación creados. Crea el primero.
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {reports.map((report) => {
-                const StatusIcon = statusIcons[report.status]
-                return (
-                  <div key={report.id} className="p-4 border border-gray-200 rounded-lg hover:shadow-md transition-shadow">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <div className="flex items-center space-x-2 mb-2">
-                          <Badge className={statusColors[report.status]}>
-                            <StatusIcon className="h-3 w-3 mr-1" />
-                            {report.status === 'DRAFT' ? 'Borrador' : 'Final'}
-                          </Badge>
+
+                <h3 className="font-medium text-gray-900 mb-2">{report.title}</h3>
+                <div className="text-sm text-gray-600 mb-2">
+                  <p>
+                    <span className="font-medium">Creado por:</span>{" "}
+                    {report.content?.metadata?.created_by || "N/A"}
+                  </p>
+                  <p>
+                    <span className="font-medium">Versión:</span>{" "}
+                    {report.content?.metadata?.version || "N/A"}
+                  </p>
+
+                  {/* ⚠️ Firmas rechazadas */}
+                  {hasRejectedSignatures(report.id!) && (
+                    <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded">
+                      <p className="font-medium text-red-800 flex items-center">
+                        <AlertTriangle className="h-4 w-4 mr-1" />
+                        Firmas Rechazadas:
+                      </p>
+                      {getRejectionInfo(report.id!).map((rejection, idx) => (
+                        <div key={idx} className="text-xs text-red-700 mt-1">
+                          <p>
+                            <span className="font-medium">Usuario:</span>{" "}
+                            {rejection.rejected_by}
+                          </p>
+                          <p>
+                            <span className="font-medium">Fecha:</span>{" "}
+                            {new Date(rejection.rejected_at).toLocaleString("es-ES")}
+                          </p>
+                          {rejection.rejection_reason && (
+                            <p>
+                              <span className="font-medium">Motivo:</span>{" "}
+                              {rejection.rejection_reason}
+                            </p>
+                          )}
                         </div>
-                        <h3 className="font-medium text-gray-900 mb-2">{report.title}</h3>
-                        <div className="text-sm text-gray-600 mb-2">
-                          <p><span className="font-medium">Creado por:</span> {report.content?.metadata?.created_by || 'N/A'}</p>
-                          <p><span className="font-medium">Versión:</span> {report.content?.metadata?.version || 'N/A'}</p>
-                        </div>
-                        <p className="text-xs text-gray-500">
-                          Creado el {new Date(report.created_at!).toLocaleString('es-ES')}
-                        </p>
-                      </div>
-                      <div className="flex items-center space-x-2 ml-4">
-                        {report.content?.metadata?.created_by || 
-                         report.content?.metadata?.reviewed_by || 
-                         report.content?.metadata?.approved_by ? (
-                          hasSignatureRequests(report.id!) ? (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              disabled
-                              className="text-green-600 border-green-200 bg-green-50"
-                            >
-                              <CheckCircle className="h-4 w-4 mr-1" />
-                              Firmas Solicitadas
-                            </Button>
-                          ) : (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => requestSignatures(report.id!, report.content)}
-                              className="text-blue-600 hover:text-blue-700"
-                            >
-                              <Send className="h-4 w-4 mr-1" />
-                              Solicitar Firmas
-                            </Button>
-                          )
-                        ) : null}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => editReport(report)}
-                        >
-                          <Edit2 className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => deleteReport(report.id!)}
-                          className="text-red-600 hover:text-red-700"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
+                      ))}
                     </div>
-                  </div>
-                )
-              })}
+                  )}
+                </div>
+
+                <p className="text-xs text-gray-500">
+                  Creado el {new Date(report.created_at!).toLocaleString("es-ES")}
+                </p>
+              </div>
+
+              {/* 📌 Acciones */}
+              <div className="flex items-center space-x-2 ml-4">
+                {report.content?.metadata?.created_by ||
+                report.content?.metadata?.reviewed_by ||
+                report.content?.metadata?.approved_by ? (
+                  hasRejectedSignatures(report.id!) ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => restartSignatureCircuit(report.id!)}
+                      className="text-orange-600 hover:text-orange-700 border-orange-200"
+                    >
+                      <RotateCcw className="h-4 w-4 mr-1" />
+                      Reiniciar Circuito
+                    </Button>
+                  ) : hasSignatureRequests(report.id!) ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled
+                      className="text-green-600 border-green-200 bg-green-50"
+                    >
+                      <CheckCircle className="h-4 w-4 mr-1" />
+                      Firmas Solicitadas
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => requestSignatures(report.id!, report.content)}
+                      className="text-blue-600 hover:text-blue-700"
+                    >
+                      <Send className="h-4 w-4 mr-1" />
+                      Solicitar Firmas
+                    </Button>
+                  )
+                ) : null}
+
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => editReport(report)}
+                >
+                  <Edit2 className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => deleteReport(report.id!)}
+                  className="text-red-600 hover:text-red-700"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
-          )}
-        </CardContent>
+          </div>
+        )
+      })}
+    </div>
+  )}
+</CardContent>
+
       </Card>
     </div>
   )

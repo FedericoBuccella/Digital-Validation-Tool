@@ -15,7 +15,8 @@ import {
   History,
   Lock,
   Loader2,
-  FileText
+  FileText,
+  RotateCcw
 } from 'lucide-react'
 import {
   Card,
@@ -46,17 +47,19 @@ import {
 } from '@/components/ui/select'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 
-const statusColors = {
+const statusColors: Record<string, string> = {
   PENDING: 'bg-yellow-100 text-yellow-800',
   SIGNED: 'bg-green-100 text-green-800',
   REJECTED: 'bg-red-100 text-red-800',
+  BLOCKED: 'bg-orange-100 text-orange-800',
   EXPIRED: 'bg-gray-100 text-gray-800'
 }
 
-const statusIcons = {
+const statusIcons: Record<string, any> = {
   PENDING: Clock,
   SIGNED: CheckCircle,
   REJECTED: XCircle,
+  BLOCKED: Lock,
   EXPIRED: AlertTriangle
 }
 
@@ -66,8 +69,11 @@ const roleLabels = {
   APPROVER: 'Aprobador'
 }
 
-interface ExtendedSignatureRequest extends SignatureRequest {
+interface ExtendedSignatureRequest extends Omit<SignatureRequest, 'status'> {
   validation_reports?: ValidationReport
+  status: 'PENDING' | 'SIGNED' | 'REJECTED' | 'BLOCKED' | 'EXPIRED'
+  rejection_reason?: string
+  rejected_at?: string
 }
 
 interface ExtendedElectronicSignature extends ElectronicSignatureType {
@@ -84,9 +90,12 @@ export default function ElectronicSignature() {
   const [loading, setLoading] = useState(true)
   const [isSignDialogOpen, setIsSignDialogOpen] = useState(false)
   const [isRequestDialogOpen, setIsRequestDialogOpen] = useState(false)
+  const [isRejectionDialogOpen, setIsRejectionDialogOpen] = useState(false)
   const [selectedRequest, setSelectedRequest] = useState<ExtendedSignatureRequest | null>(null)
+  const [selectedRequestToReject, setSelectedRequestToReject] = useState<string | null>(null)
   const [signatureComments, setSignatureComments] = useState('')
   const [signerName, setSignerName] = useState('')
+  const [rejectionReason, setRejectionReason] = useState('')
   
   // Password authentication states
   const [signerPassword, setSignerPassword] = useState('')
@@ -375,8 +384,22 @@ export default function ElectronicSignature() {
     }
   }
 
-  const rejectSignature = async (requestId: string) => {
-    if (!confirm('¿Está seguro de rechazar esta firma?')) return
+  const openRejectionDialog = (requestId: string) => {
+    console.log('Opening rejection dialog for request:', requestId)
+    setSelectedRequestToReject(requestId)
+    setIsRejectionDialogOpen(true)
+    console.log('Dialog state set to true:', true)
+  }
+
+  const rejectSignature = async () => {
+    if (!selectedRequestToReject || !rejectionReason.trim()) {
+      toast({
+        title: "Error",
+        description: "Por favor ingrese el motivo del rechazo",
+        variant: "destructive"
+      })
+      return
+    }
 
     try {
       // First, get the request details for audit trail
@@ -390,20 +413,37 @@ export default function ElectronicSignature() {
             status
           )
         `)
-        .eq('id', requestId)
+        .eq('id', selectedRequestToReject)
         .single()
 
       if (fetchError) throw fetchError
 
+      // Update the signature request with rejection and reason
       const { error } = await supabase
         .from('signature_requests')
         .update({
           status: 'REJECTED',
-          updated_at: new Date().toISOString()
+          rejection_reason: rejectionReason.trim(),
+          rejected_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          rejected_by: user?.email || null
         })
-        .eq('id', requestId)
+        .eq('id', selectedRequestToReject)
 
       if (error) throw error
+
+      // Block all other pending requests for the same report (circuit blocking)
+      const { error: blockError } = await supabase
+        .from('signature_requests')
+        .update({
+          status: 'BLOCKED',
+          updated_at: new Date().toISOString()
+        })
+        .eq('report_id', requestData.report_id)
+        .eq('status', 'PENDING')
+        .neq('id', selectedRequestToReject)
+
+      if (blockError) throw blockError
 
       // Create audit trail for signature rejection
       if (user && requestData) {
@@ -411,7 +451,7 @@ export default function ElectronicSignature() {
           user_id: user.id,
           action: 'UPDATE',
           entity: 'signature_requests',
-          entity_id: requestId,
+          entity_id: selectedRequestToReject,
           details: {
             changes: {
               status: { old: 'PENDING', new: 'REJECTED' }
@@ -419,7 +459,8 @@ export default function ElectronicSignature() {
             report_title: requestData.validation_reports?.title || 'Reporte sin título',
             signer_email: requestData.signer_email,
             signer_role: requestData.signer_role,
-            action_performed: 'Signature Rejected',
+            rejection_reason: rejectionReason.trim(),
+            action_performed: 'Signature Rejected - Circuit Blocked',
             timestamp: new Date().toISOString(),
             performed_by: {
               id: user.id,
@@ -431,15 +472,81 @@ export default function ElectronicSignature() {
 
       toast({
         title: "Éxito",
-        description: "Solicitud de firma rechazada"
+        description: "Solicitud de firma rechazada y circuito bloqueado"
       })
 
+      setIsRejectionDialogOpen(false)
+      setRejectionReason('')
+      setSelectedRequestToReject(null)
       fetchData()
     } catch (error) {
       console.error('Error rejecting signature:', error)
       toast({
         title: "Error",
         description: "No se pudo rechazar la solicitud",
+        variant: "destructive"
+      })
+    }
+  }
+
+  const restartCircuit = async (reportId: string) => {
+    if (!confirm('¿Está seguro de reiniciar el circuito de firmas? Esto restablecerá todas las solicitudes del reporte a estado pendiente.')) return
+
+    try {
+      // Get report details for audit trail
+      const { data: reportData, error: reportError } = await supabase
+        .from('validation_reports')
+        .select('title')
+        .eq('id', reportId)
+        .single()
+
+      if (reportError) throw reportError
+
+      // Reset all signature requests for this report to PENDING
+      const { error } = await supabase
+        .from('signature_requests')
+        .update({
+          status: 'PENDING',
+          rejection_reason: null,
+          rejected_at: null,
+          updated_at: new Date().toISOString()
+        })
+        .eq('report_id', reportId)
+        .in('status', ['REJECTED', 'BLOCKED'])
+
+      if (error) throw error
+
+      // Create audit trail for circuit restart
+      if (user) {
+        await supabase.from('audit_trail').insert({
+          user_id: user.id,
+          action: 'UPDATE',
+          entity: 'signature_requests',
+          entity_id: reportId,
+          details: {
+            report_title: reportData?.title || 'Reporte sin título',
+            action_performed: 'Circuit Restarted',
+            description: 'All signature requests reset to PENDING status',
+            timestamp: new Date().toISOString(),
+            performed_by: {
+              id: user.id,
+              email: user.email
+            }
+          }
+        })
+      }
+
+      toast({
+        title: "Éxito",
+        description: "Circuito de firmas reiniciado exitosamente"
+      })
+
+      fetchData()
+    } catch (error) {
+      console.error('Error restarting circuit:', error)
+      toast({
+        title: "Error",
+        description: "No se pudo reiniciar el circuito",
         variant: "destructive"
       })
     }
@@ -771,7 +878,7 @@ export default function ElectronicSignature() {
         </Dialog>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
         <Card>
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
@@ -806,6 +913,20 @@ export default function ElectronicSignature() {
                 </p>
               </div>
               <XCircle className="h-8 w-8 text-red-600" />
+            </div>
+          </CardContent>
+        </Card>
+        
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-600">Bloqueadas</p>
+                <p className="text-2xl font-bold text-orange-600">
+                  {signatureRequests.filter(r => r.status === 'BLOCKED').length}
+                </p>
+              </div>
+              <Lock className="h-8 w-8 text-orange-600" />
             </div>
           </CardContent>
         </Card>
@@ -888,7 +1009,7 @@ export default function ElectronicSignature() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => rejectSignature(request.id)}
+                          onClick={() => openRejectionDialog(request.id)}
                           className="text-red-600 hover:text-red-700"
                         >
                           <XCircle className="h-4 w-4" />
@@ -978,7 +1099,7 @@ export default function ElectronicSignature() {
                             <Button
                               variant="ghost"
                               size="sm"
-                              onClick={() => rejectSignature(request.id)}
+                              onClick={() => openRejectionDialog(request.id)}
                               className="text-red-600 hover:text-red-700"
                             >
                               <XCircle className="h-4 w-4" />
@@ -1141,6 +1262,62 @@ export default function ElectronicSignature() {
           </Card>
         ) : null
       })()}
+
+      {/* Dialog para Motivo de Rechazo */}
+      <Dialog open={isRejectionDialogOpen} onOpenChange={setIsRejectionDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center space-x-2">
+              <XCircle className="h-5 w-5 text-red-600" />
+              <span>Rechazar Solicitud de Firma</span>
+            </DialogTitle>
+            <DialogDescription>
+              Ingrese el motivo por el cual rechaza esta solicitud de firma
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Alert>
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription>
+                Al rechazar esta solicitud, se bloqueará automáticamente todo el circuito de firmas para este reporte.
+              </AlertDescription>
+            </Alert>
+            
+            <div>
+              <Label htmlFor="rejection_reason">Motivo del Rechazo *</Label>
+              <Textarea
+                id="rejection_reason"
+                value={rejectionReason}
+                onChange={(e) => setRejectionReason(e.target.value)}
+                placeholder="Explique detalladamente el motivo por el cual rechaza la firma..."
+                rows={4}
+                className="mt-1"
+              />
+            </div>
+          </div>
+          <div className="flex space-x-2 pt-4 border-t">
+            <Button 
+              onClick={rejectSignature} 
+              variant="destructive"
+              className="flex-1" 
+              disabled={!rejectionReason.trim()}
+            >
+              <XCircle className="h-4 w-4 mr-2" />
+              Confirmar Rechazo
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsRejectionDialogOpen(false)
+                setRejectionReason('')
+                setSelectedRequestToReject(null)
+              }}
+            >
+              Cancelar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Dialog para Firmar con Autenticación */}
       <Dialog open={isSignDialogOpen} onOpenChange={handleSignDialogClose}>

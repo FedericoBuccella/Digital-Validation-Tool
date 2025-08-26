@@ -23,7 +23,7 @@ import {
 
 interface UserRequirement {
   id?: string
-  email?: string,
+  email?: string
   requirement: string
   category: string
   prefix?: string

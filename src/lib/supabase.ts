@@ -90,7 +90,7 @@ export interface SignatureRequest {
   signer_email: string
   signer_role: 'CREATOR' | 'REVIEWER' | 'APPROVER'
   token: string
-  status: 'PENDING' | 'SIGNED' | 'REJECTED' | 'EXPIRED'
+  status: 'PENDING' | 'SIGNED' | 'REJECTED' | 'EXPIRED'| 'BLOCKED'
   expires_at: string
   created_at: string
   updated_at: string
