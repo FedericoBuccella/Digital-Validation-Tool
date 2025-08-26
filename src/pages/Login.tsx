@@ -1,4 +1,4 @@
-import logo1 from '../assets/logo1.png'
+import logo1 from '../../public/images/logo1.png'
 import { useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useNavigate } from 'react-router-dom'
