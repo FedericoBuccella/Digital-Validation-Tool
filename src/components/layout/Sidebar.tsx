@@ -52,7 +52,7 @@ export default function Sidebar({ open, setOpen }: SidebarProps) {
             className="flex items-center justify-center w-full h-8"
             style={{ background: 'none', border: 'none', padding: 0 }}
           >
-            <img src="/public/images/logo.png" alt="Logo" className="h-8 w-8 mx-auto" />
+            <img src="/images/logo.png" alt="Logo" className="h-8 w-8 mx-auto" />
           </button>
         )}
         {open && (
