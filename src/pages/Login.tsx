@@ -30,7 +30,7 @@ export default function Login() {
     <div className="flex flex-col items-center justify-center h-screen">
       <div className="flex flex-col items-center">
         <div>
-          <img src="/images/logo1.png" alt="logo1" className="mb-0 w-60" />
+          <img src="/images/logo1.png" alt="logo" className="mb-0 w-60" />
         </div>
         <form onSubmit={handleSubmit} className="bg-white p-8 rounded shadow-md w-80">
           <h2 className="text-2xl font-bold mb-4">Iniciar sesión</h2>
