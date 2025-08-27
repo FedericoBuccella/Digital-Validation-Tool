@@ -1,4 +1,3 @@
-import logo from '@/assets/logo.png'
 import { Link, useLocation } from 'react-router-dom'
 import { cn } from '@/lib/utils'
 import {
@@ -53,7 +52,7 @@ export default function Sidebar({ open, setOpen }: SidebarProps) {
             className="flex items-center justify-center w-full h-8"
             style={{ background: 'none', border: 'none', padding: 0 }}
           >
-            <img src={logo} alt="Logo" className="h-8 w-8 mx-auto" />
+            <img src="/public/images/logo.png" alt="Logo" className="h-8 w-8 mx-auto" />
           </button>
         )}
         {open && (
