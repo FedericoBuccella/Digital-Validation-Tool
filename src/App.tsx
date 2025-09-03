@@ -19,6 +19,7 @@ import ProtectedRoute from './ProtectedRoute'
 import './App.css'
 import ProtocolExecution from './pages/ProtocolExecution'
 
+
 function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
 

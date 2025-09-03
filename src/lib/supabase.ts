@@ -1,11 +1,11 @@
-import { createClient } from '@supabase/supabase-js' 
+import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = 'https://hcaavosfjbveoggruxig.supabase.co'
 const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhjYWF2b3NmamJ2ZW9nZ3J1eGlnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQ1NTczNDMsImV4cCI6MjA3MDEzMzM0M30.85qxIZuQwc7OOGGMpcvY6IyuTGZTp2TXn4wSEC2Pfvk'
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    autoRefreshToken: true, 
+    autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
     storage: {
