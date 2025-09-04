@@ -43,33 +43,116 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const signIn = async (email: string, password: string) => {
-    // Primero autenticar con Supabase Auth
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
-    
-    if (error) return { error }
-    
-    if (data.user) {
-      // Verificar que el usuario exista y esté activo en system_users
-      const { data: systemUser, error: systemError } = await supabase
-        .from('system_users')
-        .select('is_active, full_name, role')
-        .eq('id', data.user.id)
-        .single()
+    try {
+      // Limpiar cualquier sesión anterior
+      await supabase.auth.signOut()
       
-      if (systemError || !systemUser) {
-        // Si no existe en system_users, cerrar sesión y retornar error
-        await supabase.auth.signOut()
-        return { error: { message: 'Usuario no encontrado en el sistema' } }
+      // Validar que email y password no estén vacíos
+      if (!email || !password) {
+        return { error: { message: 'Email y contraseña son requeridos' } }
+      }
+
+      // Validar formato de email
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+      if (!emailRegex.test(email)) {
+        return { error: { message: 'Formato de email inválido' } }
+      }
+
+      console.log('Intentando autenticar con:', email)
+      
+      // Autenticar con Supabase Auth
+      const { data, error } = await supabase.auth.signInWithPassword({ 
+        email: email.trim().toLowerCase(), 
+        password: password 
+      })
+      
+      if (error) {
+        console.error('Error de autenticación:', error)
+        
+        // Manejar diferentes tipos de errores
+        if (error.message.includes('Invalid login credentials')) {
+          return { error: { message: 'Credenciales incorrectas. Verifique su email y contraseña.' } }
+        } else if (error.message.includes('Email not confirmed')) {
+          return { error: { message: 'Email no confirmado. Revise su bandeja de entrada.' } }
+        } else if (error.message.includes('Too many requests')) {
+          return { error: { message: 'Demasiados intentos. Espere unos minutos antes de intentar nuevamente.' } }
+        } else {
+          return { error: { message: `Error de autenticación: ${error.message}` } }
+        }
       }
       
-      if (!systemUser.is_active) {
-        // Si el usuario está inactivo, cerrar sesión y retornar error
-        await supabase.auth.signOut()
-        return { error: { message: 'Usuario inactivo. Contacte al administrador.' } }
+      if (data.user) {
+        console.log('Usuario autenticado:', data.user.id)
+        console.log('Email del usuario:', data.user.email)
+        
+        // Primero, intentar consultar sin .single() para ver si existen registros
+        console.log('Consultando system_users para ID:', data.user.id)
+        
+        const { data: systemUsers, error: queryError } = await supabase
+          .from('system_users')
+          .select('id, is_active, full_name, role, email')
+          .eq('id', data.user.id)
+        
+        console.log('Resultado de consulta system_users:', systemUsers)
+        console.log('Error de consulta:', queryError)
+        
+        if (queryError) {
+          console.error('Error consultando system_users:', queryError)
+          await supabase.auth.signOut()
+          return { error: { message: `Error de base de datos: ${queryError.message}` } }
+        }
+        
+        // Si no hay registros, intentar buscar por email como alternativa
+        if (!systemUsers || systemUsers.length === 0) {
+          console.log('No se encontró por ID, intentando buscar por email:', data.user.email)
+          
+          const { data: systemUsersByEmail, error: emailQueryError } = await supabase
+            .from('system_users')
+            .select('id, is_active, full_name, role, email')
+            .eq('email', data.user.email)
+          
+          console.log('Resultado de consulta por email:', systemUsersByEmail)
+          
+          if (emailQueryError) {
+            console.error('Error consultando por email:', emailQueryError)
+            await supabase.auth.signOut()
+            return { error: { message: `Error de base de datos: ${emailQueryError.message}` } }
+          }
+          
+          if (!systemUsersByEmail || systemUsersByEmail.length === 0) {
+            await supabase.auth.signOut()
+            return { error: { message: 'Usuario no encontrado en system_users. Verifique que el usuario esté registrado correctamente en el sistema.' } }
+          }
+          
+          // Usar el primer resultado encontrado por email
+          const systemUser = systemUsersByEmail[0]
+          
+          if (!systemUser.is_active) {
+            await supabase.auth.signOut()
+            return { error: { message: 'Usuario inactivo. Contacte al administrador.' } }
+          }
+          
+          console.log('Usuario encontrado por email y verificado:', systemUser)
+          
+        } else {
+          // Usuario encontrado por ID
+          const systemUser = systemUsers[0]
+          
+          if (!systemUser.is_active) {
+            await supabase.auth.signOut()
+            return { error: { message: 'Usuario inactivo. Contacte al administrador.' } }
+          }
+          
+          console.log('Usuario encontrado por ID y verificado:', systemUser)
+        }
       }
+      
+      return { data, error: null }
+      
+    } catch (err) {
+      console.error('Error inesperado durante el login:', err)
+      return { error: { message: 'Error inesperado. Intente nuevamente.' } }
     }
-    
-    return { data, error }
   }
 
   const signUp = async (email: string, password: string) => {
@@ -77,7 +160,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   const signOut = async () => {
-    await supabase.auth.signOut()
+    try {
+      await supabase.auth.signOut()
+      setUser(null)
+    } catch (error) {
+      console.error('Error during sign out:', error)
+    }
   }
 
   const value = {

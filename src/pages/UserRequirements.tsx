@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/hooks/use-toast'
@@ -18,16 +19,22 @@ import {
   AlertTriangle,
   CheckCircle,
   Clock,
-  Filter
+  Filter,
+  Brain,
+  PenTool,
+  Sparkles
 } from 'lucide-react'
 
-interface UserRequirement {
+import ProcessMapAnalyzer from '@/components/ui/ProcessMapAnalyzer'
+
+export interface UserRequirement {
   id?: string
   email?: string
   requirement: string
   category: string
   prefix?: string
   number?: string
+  source?: 'manual' | 'ai-generated'
   priority: 'HIGH' | 'MEDIUM' | 'LOW'
   created_at?: string
 }
@@ -65,6 +72,7 @@ export default function UserRequirements() {
   const [editingRequirement, setEditingRequirement] = useState<UserRequirement | null>(null)
   const [filterCategory, setFilterCategory] = useState<string>('all')
   const [filterPriority, setFilterPriority] = useState<string>('all')
+  const [activeTab, setActiveTab] = useState<string>('manual')
   const [newRequirement, setNewRequirement] = useState<UserRequirement>({
     requirement: '',
     category: '',
@@ -92,6 +100,25 @@ export default function UserRequirements() {
     }
   }, [user]);
 
+  // Custom sorting function for requirements by number
+  const sortRequirementsByNumber = (reqs: UserRequirement[]): UserRequirement[] => {
+    return [...reqs].sort((a, b) => {
+      // First sort by prefix
+      const prefixA = a.prefix || 'ZZZ'
+      const prefixB = b.prefix || 'ZZZ'
+      
+      if (prefixA !== prefixB) {
+        return prefixA.localeCompare(prefixB)
+      }
+      
+      // Then sort by number (convert to number for proper numeric sorting)
+      const numberA = parseInt(a.number || '999999', 10)
+      const numberB = parseInt(b.number || '999999', 10)
+      
+      return numberA - numberB
+    })
+  }
+
   const fetchRequirements = async () => {
     if (!user) return
 
@@ -99,11 +126,14 @@ export default function UserRequirements() {
       const { data, error } = await supabase
         .from('user_requirements')
         .select('*')
-        .order('created_at', { ascending: false })
+        .order('prefix', { ascending: true })
+        .order('number', { ascending: true })
 
       if (error) throw error
 
-      setRequirements(data || [])
+      // Apply custom sorting to ensure proper numeric ordering
+      const sortedData = sortRequirementsByNumber(data || [])
+      setRequirements(sortedData)
     } catch (error) {
       console.error('Error fetching requirements:', error)
       toast({
@@ -113,6 +143,47 @@ export default function UserRequirements() {
       })
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Function to get the next sequential number for AI-generated requirements
+  const getNextSequentialNumber = async (prefix: string = 'URS'): Promise<string> => {
+    try {
+      // Get all requirements with the same prefix, ordered by number
+      const { data, error } = await supabase
+        .from('user_requirements')
+        .select('number, prefix')
+        .eq('prefix', prefix)
+        .not('number', 'is', null)
+        .order('number', { ascending: false })
+
+      if (error) {
+        console.error('Error fetching requirements for numbering:', error)
+        return '001' // Default fallback
+      }
+
+      if (!data || data.length === 0) {
+        return '001' // First requirement
+      }
+
+      // Find the highest numeric number
+      let highestNumber = 0
+      data.forEach(req => {
+        if (req.number) {
+          const numericValue = parseInt(req.number, 10)
+          if (!isNaN(numericValue) && numericValue > highestNumber) {
+            highestNumber = numericValue
+          }
+        }
+      })
+
+      // Return next number with proper padding
+      const nextNumber = highestNumber + 1
+      return nextNumber.toString().padStart(3, '0')
+
+    } catch (error) {
+      console.error('Error in getNextSequentialNumber:', error)
+      return '001' // Fallback
     }
   }
 
@@ -127,7 +198,9 @@ export default function UserRequirements() {
       filtered = filtered.filter(req => req.priority === filterPriority)
     }
 
-    setFilteredRequirements(filtered)
+    // Apply sorting to filtered results
+    const sortedFiltered = sortRequirementsByNumber(filtered)
+    setFilteredRequirements(sortedFiltered)
   }
 
   const saveRequirement = async () => {
@@ -197,15 +270,21 @@ export default function UserRequirements() {
               }
             }})
       } else {
-        // Create new
+        // Create new - for manual creation, use provided number or get next sequential
+        let finalNumber = newRequirement.number
+        if (!finalNumber) {
+          finalNumber = await getNextSequentialNumber(newRequirement.prefix || 'URS')
+        }
+
         const { data, error } = await supabase
           .from('user_requirements')
           .insert({
             requirement: newRequirement.requirement,
             category: newRequirement.category,
             priority: newRequirement.priority,
-            prefix: newRequirement.prefix,
-            number: newRequirement.number,
+            prefix: newRequirement.prefix || 'URS',
+            number: finalNumber,
+            source: 'manual',
             email: userEmail,
             user_id: user.id
           })
@@ -222,6 +301,8 @@ export default function UserRequirements() {
             details: {
               new_data: {
                 ...newRequirement,
+                number: finalNumber,
+                source: 'manual',
                 email: userEmail
               },
               timestamp: new Date().toISOString(),
@@ -255,6 +336,111 @@ export default function UserRequirements() {
       })
     }
   }
+
+  // Handle requirements generated from AI - ENHANCED: Now uses sequential numbering
+  const handleRequirementsGenerated = async (aiRequirements: Omit<UserRequirement, 'id' | 'source' | 'createdAt'>[]) => {
+    if (!user) {
+      toast({
+        title: "Error",
+        description: "Debes estar autenticado para guardar requerimientos",
+        variant: "destructive"
+      })
+      return
+    }
+
+    try {
+      const userEmail = user.email || ''
+      
+      // Get the starting number for sequential numbering
+      const startingNumber = await getNextSequentialNumber('URS')
+      let currentNumber = parseInt(startingNumber, 10)
+
+      // Prepare requirements for database insertion with sequential numbering
+      const requirementsToInsert = aiRequirements.map((req, index) => {
+        const sequentialNumber = (currentNumber + index).toString().padStart(3, '0')
+        
+        return {
+          requirement: req.requirement,
+          category: req.category,
+          priority: req.priority,
+          prefix: 'URS', // Standard prefix for AI-generated requirements
+          number: sequentialNumber,
+          source: 'ai-generated' as const,
+          email: userEmail,
+          user_id: user.id
+        }
+      })
+
+      console.log('AI Requirements with sequential numbering:', requirementsToInsert)
+
+      // Insert all requirements into the database
+      const { data, error } = await supabase
+        .from('user_requirements')
+        .insert(requirementsToInsert)
+        .select()
+
+      if (error) {
+        console.error('Error inserting AI requirements:', error)
+        throw error
+      }
+
+      // Create audit trail entries for each inserted requirement
+      if (data && data.length > 0) {
+        const auditEntries = data.map(req => ({
+          user_id: user.id,
+          action: 'CREATE',
+          entity: 'user_requirement',
+          entity_id: req.id,
+          details: {
+            new_data: {
+              ...req,
+              source: 'ai-generated'
+            },
+            timestamp: new Date().toISOString(),
+            performed_by: {
+              id: user.id,
+              email: userEmail
+            }
+          }
+        }))
+
+        await supabase.from('audit_trail').insert(auditEntries)
+      }
+
+      // Refresh the requirements list
+      await fetchRequirements()
+      
+      toast({
+        title: "¡Requerimientos generados con IA guardados!",
+        description: `Se han guardado ${aiRequirements.length} requerimientos con numeración secuencial desde URS-${startingNumber}`,
+      })
+
+    } catch (error) {
+      console.error('Error saving AI requirements:', error)
+      toast({
+        title: "Error",
+        description: "No se pudieron guardar los requerimientos generados por IA en la base de datos",
+        variant: "destructive"
+      })
+      
+      // Fallback: Add to local state only if database save fails
+      const newRequirements: UserRequirement[] = aiRequirements.map(req => ({
+        ...req,
+        id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+        source: 'ai-generated',
+        created_at: new Date().toISOString()
+      }))
+
+      setRequirements(prev => [...prev, ...newRequirements])
+      
+      toast({
+        title: "Requerimientos agregados localmente",
+        description: `Se agregaron ${newRequirements.length} requerimientos al estado local (no guardados en BD)`,
+        variant: "destructive"
+      })
+    }
+  }
+
 
   const editRequirement = (requirement: UserRequirement) => {
     setEditingRequirement(requirement)
@@ -339,124 +525,183 @@ export default function UserRequirements() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold text-gray-900">Requerimientos de Usuario</h1>
-        <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={resetDialog} className="flex items-center space-x-2">
-              <Plus className="h-4 w-4" />
-              <span>Nuevo Requerimiento</span>
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>
-                {editingRequirement ? 'Editar' : 'Crear'} Requerimiento
-              </DialogTitle>
-              <DialogDescription>
-                {editingRequirement
-                  ? 'Modifica los detalles del requerimiento'
-                  : 'Crea un nuevo requerimiento de usuario para el sistema'}
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4">
-              <div>
-                <Label htmlFor="prefix">Prefijo</Label>
-                <Select
-                  value={newRequirement.prefix || ''}
-                  onValueChange={value => setNewRequirement(prev => ({ ...prev, prefix: value }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecciona un prefijo" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="URS">URS</SelectItem>
-                    <SelectItem value="FI">FI</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label htmlFor="number">Número</Label>
-                <Input
-                  id="number"
-                  type="text"
-                  value={newRequirement.number || ''}
-                  onChange={e => setNewRequirement(prev => ({ ...prev, number: e.target.value }))}
-                  placeholder="Ej: 001"
-                />
-                <Label htmlFor="requirement">Descripción del Requerimiento</Label>
-                <Textarea
-                  id="requirement"
-                  value={newRequirement.requirement}
-                  onChange={(e) => setNewRequirement(prev => ({
-                    ...prev,
-                    requirement: e.target.value
-                  }))}
-                  placeholder="Describe el requerimiento funcional o no funcional..."
-                  rows={4}
-                />
-              </div>
-              <div>
-                <Label htmlFor="category">Categoría</Label>
-                <Select
-                  value={newRequirement.category}
-                  onValueChange={(value) => setNewRequirement(prev => ({
-                    ...prev,
-                    category: value
-                  }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecciona una categoría" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {categories.map(category => (
-                      <SelectItem key={category} value={category}>
-                        {category}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label htmlFor="priority">Prioridad</Label>
-                <Select
-                  value={newRequirement.priority}
-                  onValueChange={(value: 'HIGH' | 'MEDIUM' | 'LOW') => setNewRequirement(prev => ({
-                    ...prev,
-                    priority: value
-                  }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="HIGH">Alta</SelectItem>
-                    <SelectItem value="MEDIUM">Media</SelectItem>
-                    <SelectItem value="LOW">Baja</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex space-x-2 pt-4">
-                <Button onClick={saveRequirement} className="flex-1">
-                  {editingRequirement ? 'Actualizar' : 'Crear'} Requerimiento
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => setIsDialogOpen(false)}
-                >
-                  Cancelar
-                </Button>
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
       </div>
 
+      {/* Tabs for Manual vs AI Generation */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <TabsList className="grid w-full grid-cols-2">
+          <TabsTrigger value="manual" className="flex items-center space-x-2">
+            <PenTool className="h-4 w-4" />
+            <span>Generación Manual</span>
+          </TabsTrigger>
+          <TabsTrigger value="ai" className="flex items-center space-x-2">
+            <Brain className="h-4 w-4" />
+            <span>Generación con IA</span>
+          </TabsTrigger>
+        </TabsList>
+
+        {/* Manual Generation Tab */}
+        <TabsContent value="manual" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center space-x-2">
+                <PenTool className="h-5 w-5 text-blue-600" />
+                <span>Crear Requerimiento Manual</span>
+              </CardTitle>
+              <CardDescription>
+                Crea requerimientos de usuario de forma manual con control total sobre cada campo
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex justify-center">
+                <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+                  <DialogTrigger asChild>
+                    <Button onClick={resetDialog} className="flex items-center space-x-2" size="lg">
+                      <Plus className="h-5 w-5" />
+                      <span>Nuevo Requerimiento Manual</span>
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-2xl">
+                    <DialogHeader>
+                      <DialogTitle className="flex items-center space-x-2">
+                        <PenTool className="h-5 w-5" />
+                        <span>{editingRequirement ? 'Editar' : 'Crear'} Requerimiento</span>
+                      </DialogTitle>
+                      <DialogDescription>
+                        {editingRequirement
+                          ? 'Modifica los detalles del requerimiento'
+                          : 'Crea un nuevo requerimiento de usuario para el sistema'}
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="prefix">Prefijo</Label>
+                          <Select
+                            value={newRequirement.prefix || ''}
+                            onValueChange={value => setNewRequirement(prev => ({ ...prev, prefix: value }))}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Selecciona un prefijo" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="URS">URS</SelectItem>
+                              <SelectItem value="FI">FI</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label htmlFor="number">Número (opcional)</Label>
+                          <Input
+                            id="number"
+                            type="text"
+                            value={newRequirement.number || ''}
+                            onChange={e => setNewRequirement(prev => ({ ...prev, number: e.target.value }))}
+                            placeholder="Ej: 001 (auto si se deja vacío)"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <Label htmlFor="requirement">Descripción del Requerimiento</Label>
+                        <Textarea
+                          id="requirement"
+                          value={newRequirement.requirement}
+                          onChange={(e) => setNewRequirement(prev => ({
+                            ...prev,
+                            requirement: e.target.value
+                          }))}
+                          placeholder="Describe el requerimiento funcional o no funcional..."
+                          rows={4}
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <Label htmlFor="category">Categoría</Label>
+                          <Select
+                            value={newRequirement.category}
+                            onValueChange={(value) => setNewRequirement(prev => ({
+                              ...prev,
+                              category: value
+                            }))}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Selecciona una categoría" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {categories.map(category => (
+                                <SelectItem key={category} value={category}>
+                                  {category}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label htmlFor="priority">Prioridad</Label>
+                          <Select
+                            value={newRequirement.priority}
+                            onValueChange={(value: 'HIGH' | 'MEDIUM' | 'LOW') => setNewRequirement(prev => ({
+                              ...prev,
+                              priority: value
+                            }))}
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="HIGH">Alta</SelectItem>
+                              <SelectItem value="MEDIUM">Media</SelectItem>
+                              <SelectItem value="LOW">Baja</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                      <div className="flex space-x-2 pt-4">
+                        <Button onClick={saveRequirement} className="flex-1">
+                          {editingRequirement ? 'Actualizar' : 'Crear'} Requerimiento
+                        </Button>
+                        <Button
+                          variant="outline"
+                          onClick={() => setIsDialogOpen(false)}
+                        >
+                          Cancelar
+                        </Button>
+                      </div>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* AI Generation Tab */}
+        <TabsContent value="ai" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center space-x-2">
+                <Sparkles className="h-5 w-5 text-purple-600" />
+                <span>Generación Automática con IA</span>
+              </CardTitle>
+              <CardDescription>
+                Sube una imagen de tu mapa de proceso y deja que la IA genere requerimientos automáticamente con numeración secuencial
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ProcessMapAnalyzer onRequirementsGenerated={handleRequirementsGenerated} />
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+
+      {/* Requirements List - Shared between both tabs */}
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle>Lista de Requerimientos</CardTitle>
+              <CardTitle>Lista de Requerimientos (Ordenados por Número)</CardTitle>
               <CardDescription>
-                Gestiona los requerimientos funcionales y no funcionales del sistema
+                Gestiona los requerimientos funcionales y no funcionales del sistema - Ordenados de menor a mayor
               </CardDescription>
             </div>
             <div className="flex items-center space-x-2">
@@ -522,8 +767,19 @@ export default function UserRequirements() {
                             {requirement.priority === 'HIGH' ? 'Alta' : requirement.priority === 'MEDIUM' ? 'Media' : 'Baja'}
                           </Badge>
                           {requirement.prefix && requirement.number && (
-                            <Badge variant="outline">
+                            <Badge variant="outline" className="font-mono">
                               {requirement.prefix}-{requirement.number}
+                            </Badge>
+                          )}
+                          {requirement.source === 'ai-generated' ? (
+                            <Badge className="bg-purple-100 text-purple-800">
+                              <Sparkles className="h-3 w-3 mr-1" />
+                              IA
+                            </Badge>
+                          ) : (
+                            <Badge className="bg-blue-100 text-blue-800">
+                              <PenTool className="h-3 w-3 mr-1" />
+                              Manual
                             </Badge>
                           )}
                         </div>
@@ -558,12 +814,13 @@ export default function UserRequirements() {
         </CardContent>
       </Card>
 
+      {/* Statistics - Shared between both tabs */}
       <Card>
         <CardHeader>
           <CardTitle>Estadísticas</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div className="text-center">
               <div className="text-2xl font-bold text-red-600">
                 {requirements.filter(r => r.priority === 'HIGH').length}
@@ -581,6 +838,12 @@ export default function UserRequirements() {
                 {requirements.filter(r => r.priority === 'LOW').length}
               </div>
               <div className="text-sm text-gray-500">Prioridad Baja</div>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-bold text-purple-600">
+                {requirements.filter(r => r.source === 'ai-generated').length}
+              </div>
+              <div className="text-sm text-gray-500">Generados por IA</div>
             </div>
           </div>
         </CardContent>

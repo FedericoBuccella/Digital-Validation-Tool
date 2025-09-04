@@ -8,21 +8,28 @@ export default function Login() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
-    const { error } = await signIn(email, password)
-    if (error) {
-      if (error.message.includes('Usuario inactivo')) {
-        setError('Su cuenta está inactiva. Contacte al administrador.')
-      } else if (error.message.includes('Usuario no encontrado')) {
-        setError('Usuario no registrado en el sistema.')
+    setIsLoading(true)
+
+    try {
+      const { error } = await signIn(email, password)
+      
+      if (error) {
+        console.error('Login error:', error)
+        setError(error.message || 'Error desconocido durante el login')
       } else {
-        setError('Credenciales incorrectas')
+        console.log('Login exitoso, redirigiendo...')
+        navigate('/')
       }
-    } else {
-      navigate('/')
+    } catch (err) {
+      console.error('Unexpected error:', err)
+      setError('Error inesperado. Intente nuevamente.')
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -41,6 +48,7 @@ export default function Login() {
             value={email}
             onChange={e => setEmail(e.target.value)}
             required
+            disabled={isLoading}
           />
           <input
             type="password"
@@ -49,13 +57,19 @@ export default function Login() {
             value={password}
             onChange={e => setPassword(e.target.value)}
             required
+            disabled={isLoading}
           />
-          {error && <div className="text-red-500 mb-2">{error}</div>}
+          {error && (
+            <div className="text-red-500 mb-2 text-sm">
+              {error}
+            </div>
+          )}
           <button
             type="submit"
-            className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700"
+            className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={isLoading}
           >
-            Entrar
+            {isLoading ? 'Entrando...' : 'Entrar'}
           </button>
         </form>
       </div>
