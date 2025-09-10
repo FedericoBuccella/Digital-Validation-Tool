@@ -67,7 +67,7 @@ Si veo una caja que dice "Generación de Reportes", debo crear:
 
 Si veo "Validación de Usuario", debo crear:
 "El sistema debe validar las credenciales del usuario antes del acceso"
-
+ 
 IMPORTANTE: 
 - NO inventes funcionalidades que no veas
 - SÉ ESPECÍFICO con lo que realmente aparece en la imagen
