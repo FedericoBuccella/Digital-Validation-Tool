@@ -117,7 +117,7 @@ function determineComplexity(sizeAnalysis: string, colorAnalysis: ColorAnalysis)
   return 'medium'
 }
 
-function generateElementsFromAnalysis(processType: ProcessMapAnalysis['processType'], complexity: ProcessMapAnalysis['complexity']): string[] {
+function generateElementsFromAnalysis(processType: ProcessMapAnalysis['processType'], _: ProcessMapAnalysis['complexity']): string[] {
   const baseElements = ['Proceso principal', 'Puntos de decisión', 'Controles de calidad']
   
   switch (processType) {

@@ -420,7 +420,7 @@ export { GeminiAIService };
 // Utility functions
 export const createGeminiService = (customApiKey?: string) => {
   if (customApiKey) {
-    const customEnv = { ...env, GEMINI_API_KEY: customApiKey };
+    //const customEnv = { ...env, GEMINI_API_KEY: customApiKey };
     return new GeminiAIService();
   }
   return geminiAI;
