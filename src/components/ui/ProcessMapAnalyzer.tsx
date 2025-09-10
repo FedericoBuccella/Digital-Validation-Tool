@@ -48,14 +48,15 @@ const ProcessMapAnalyzer: React.FC<{ onRequirementsGenerated: (requirements: Use
     return `Analiza cuidadosamente esta imagen de un mapa de proceso o diagrama de flujo y genera requerimientos de usuario específicos basados en EXACTAMENTE lo que ves.
 
 INSTRUCCIONES CRÍTICAS:
-1. EXAMINA CADA ELEMENTO VISUAL: Lee TODO el texto visible en cajas, rectángulos, formas, etiquetas, títulos
+1. EXAMINA CADA ELEMENTO VISUAL: Lee TODO el texto visible en cajas, rectángulos que solo sean de color gris y naranja
 2. IDENTIFICA FUNCIONALIDADES: Si ves texto como "Generación de reporte", "Validación de datos", "Autenticación", etc., crea requerimientos específicos para esas funciones
 3. ANALIZA FLUJOS: Observa las flechas y conexiones entre elementos para entender el proceso
-4. DETECTA DECISIONES: Si hay rombos o puntos de decisión, crea requerimientos para esas validaciones
+4. DETECTA DECISIONES: Si hay rombos o puntos de decisión, crea requerimientos para las cajas o rectangulos posteriores
 5. CONSIDERA ACTORES: Si hay roles o usuarios mencionados, incluye requerimientos de permisos/acceso
 
 FORMATO DE REQUERIMIENTOS:
-- Para cada función/elemento visible, crea un requerimiento específico
+- Solo generar requerimientos para las cajas o rectangulos de color gris y naranja. NO GENERAR REQUERIMIENTOS PARA CAJAS AZULES
+- Para cada función/elemento visible de color gris o naranja, crea un requerimiento específico
 - Usa lenguaje técnico apropiado: "El sistema debe permitir...", "La aplicación debe validar...", etc.
 - Categoriza apropiadamente: Funcional, Seguridad, Interfaz, Rendimiento, etc.
 - Prioriza según criticidad: HIGH para funciones core, MEDIUM para importantes, LOW para mejoras
@@ -70,7 +71,7 @@ Si veo "Validación de Usuario", debo crear:
 IMPORTANTE: 
 - NO inventes funcionalidades que no veas
 - SÉ ESPECÍFICO con lo que realmente aparece en la imagen
-- Genera entre 5-12 requerimientos únicos
+- Genera entre 25-32 requerimientos únicos
 - Cada requerimiento debe corresponder a elementos visibles
 
 Responde ÚNICAMENTE con un JSON array válido:
@@ -133,7 +134,7 @@ Responde ÚNICAMENTE con un JSON array válido:
       console.log('Calling Gemini Vision API...');
       const response = await geminiAI.analyzeImageWithPrompt(base64Image, prompt, mimeType, {
         temperature: 0.7,
-        maxTokens: 3000
+        maxTokens: 4000
       });
       
       console.log('Gemini Vision API response received:', response.substring(0, 200) + '...');
@@ -166,7 +167,7 @@ Responde ÚNICAMENTE con un JSON array válido:
             category: String(req.category),
             priority: req.priority as 'HIGH' | 'MEDIUM' | 'LOW',
             prefix: req.prefix || 'URS',
-            number: req.number || String(10 + index).padStart(3, '0')
+            number: req.number || String(1 + index).padStart(3, '0')
           };
         });
         
